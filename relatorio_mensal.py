@@ -28,7 +28,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 # =============================================================
 EMAIL_CAIXA      = os.environ.get("EMAIL_CAIXA",      "sub.credito@avla.com")
 APP_PASSWORD     = os.environ.get("APP_PASSWORD",      "")
-REMETENTE_FILTRO = os.environ.get("REMETENTE_FILTRO",  "sub.credito@avla.com")
+ASSUNTO_FILTRO   = os.environ.get("ASSUNTO_FILTRO",   "SINISTRO")
 EMAIL_DESTINO    = os.environ.get("EMAIL_DESTINO",     "mgignon@avla.com")
 
 IMAP_SERVER = "imap.gmail.com"
@@ -115,14 +115,14 @@ def coletar_emails(inicio: datetime, fim: datetime) -> list:
     print(f"Conectando em {EMAIL_CAIXA}...")
     mail = imaplib.IMAP4_SSL(IMAP_SERVER)
     mail.login(EMAIL_CAIXA, APP_PASSWORD)
-    mail.select('inbox')
+    mail.select('"[Gmail]/All Mail"')
 
     since  = inicio.strftime("%d-%b-%Y")
     before = (fim + timedelta(days=1)).strftime("%d-%b-%Y")
 
     _, ids = mail.search(
         None,
-        f'(FROM "{REMETENTE_FILTRO}" SINCE "{since}" BEFORE "{before}")'
+        f'(SUBJECT "{ASSUNTO_FILTRO}" SINCE "{since}" BEFORE "{before}")'
     )
 
     ids_lista = ids[0].split()

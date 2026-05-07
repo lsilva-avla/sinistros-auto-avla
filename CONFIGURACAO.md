@@ -50,7 +50,7 @@ git push -u origin main
 |------------------|--------------------------------|
 | `EMAIL_CAIXA`    | `mgignon@avla.com`             |
 | `APP_PASSWORD`   | senha de 16 chars gerada       |
-| `REMETENTE_FILTRO` | `sub.credito@avla.com`       |
+| `ASSUNTO_FILTRO` | `SINISTRO`                     |
 | `EMAIL_DESTINO`  | `mgignon@avla.com`             |
 
 ### Testar manualmente

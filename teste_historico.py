@@ -23,7 +23,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 EMAIL_CAIXA      = os.environ.get("EMAIL_CAIXA",      "mgignon@avla.com")
 APP_PASSWORD     = os.environ.get("APP_PASSWORD",      "")
-REMETENTE_FILTRO = os.environ.get("REMETENTE_FILTRO",  "sub.credito@avla.com")
+ASSUNTO_FILTRO   = os.environ.get("ASSUNTO_FILTRO",   "SINISTRO")
 EMAIL_DESTINO    = "lsilva@avla.com"
 
 INICIO = datetime(2026, 1, 1)
@@ -97,14 +97,14 @@ def coletar_emails() -> list:
 
     mail = imaplib.IMAP4_SSL(IMAP_SERVER)
     mail.login(EMAIL_CAIXA, APP_PASSWORD)
-    mail.select('inbox')
+    mail.select('"[Gmail]/All Mail"')
 
     since  = INICIO.strftime("%d-%b-%Y")
     before = (FIM + timedelta(days=1)).strftime("%d-%b-%Y")
 
     _, ids = mail.search(
         None,
-        f'(FROM "{REMETENTE_FILTRO}" SINCE "{since}" BEFORE "{before}")'
+        f'(SUBJECT "{ASSUNTO_FILTRO}" SINCE "{since}" BEFORE "{before}")'
     )
 
     ids_lista = ids[0].split()
