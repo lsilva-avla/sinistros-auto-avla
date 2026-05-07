@@ -10,6 +10,7 @@ import email
 import smtplib
 import re
 import os
+import base64
 import sys
 import pandas as pd
 from email.mime.multipart import MIMEMultipart
@@ -232,23 +233,104 @@ def gerar_excel(registros: list) -> BytesIO:
     return buf
 
 
-def enviar_relatorio(buf: BytesIO, qtd: int):
-    msg = MIMEMultipart()
+def _logo_b64():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'avla_logo.png')
+    if os.path.exists(path):
+        return 'data:image/png;base64,' + base64.b64encode(open(path, 'rb').read()).decode()
+    return ''
+
+
+def parse_valor(s: str) -> float:
+    try:
+        s = re.sub(r'[^\d,]', '', str(s))
+        return float(s.replace(',', '.')) if s else 0.0
+    except Exception:
+        return 0.0
+
+
+def formatar_brl(v: float) -> str:
+    if v >= 1_000_000:
+        return 'R$ ' + '{:.1f}'.format(v / 1_000_000).replace('.', ',') + 'M'
+    if v >= 1_000:
+        return 'R$ ' + '{:.0f}'.format(v / 1_000) + 'K'
+    return 'R$ ' + '{:.2f}'.format(v).replace('.', ',')
+
+
+def gerar_html_email(qtd, registros, label_periodo, nome_arquivo):
+    logo = _logo_b64()
+    img_h = (f'<img src="{logo}" alt="AVLA" style="height:52px;display:block;margin:0 auto;">'
+             if logo else '<span style="color:white;font-size:26px;font-weight:bold;">AVLA</span>')
+    img_f = (f'<img src="{logo}" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
+             if logo else '<span style="color:white;font-size:18px;font-weight:bold;">AVLA</span>')
+
+    total_v = sum(parse_valor(r.get('Valor Sinistrado', '')) for r in registros)
+    maior_v = max((parse_valor(r.get('Valor Sinistrado', '')) for r in registros), default=0.0)
+    maior_r = next((r for r in registros if parse_valor(r.get('Valor Sinistrado', '')) == maior_v), {})
+    maior_nome = maior_r.get('Devedor', maior_r.get('Segurado', '—'))
+    if len(maior_nome) > 22:
+        maior_nome = maior_nome[:22] + '…'
+
+    def card(cor, label, val, sub):
+        fs = '22' if label == 'Total de Casos' else '18'
+        return (
+            f'<td width="33%" style="padding:0 5px;">'
+            f'<div style="border:1px solid #e0e0e0;border-top:4px solid {cor};border-radius:4px;padding:16px 12px 12px;text-align:center;">'
+            f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888;margin-bottom:8px;">{label}</div>'
+            f'<div style="font-size:{fs}px;font-weight:800;color:#1a1a1a;line-height:1.1;">{val}</div>'
+            f'<div style="font-size:10px;color:#aaa;margin-top:4px;">{sub}</div>'
+            f'</div></td>'
+        )
+
+    return (
+        '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"></head>'
+        '<body style="margin:0;padding:40px 20px;background:#f0f2f5;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="max-width:620px;margin:0 auto;background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.12);">'
+        f'<div style="background:#0071CE;padding:24px 40px;text-align:center;">{img_h}</div>'
+        '<div style="height:6px;background:linear-gradient(to right,#0071CE 0%,#0071CE 30%,#00A3D9 30%,#00A3D9 55%,#00C4B4 55%,#00C4B4 75%,#7DC242 75%,#7DC242 100%);"></div>'
+        '<div style="padding:36px 40px 28px;">'
+        '<p style="font-size:14px;color:#444;margin:0 0 8px;">Olá, equipe de Crédito,</p>'
+        '<h1 style="font-size:22px;font-weight:700;color:#0071CE;margin:0 0 6px;">Histórico de Sinistros 2026</h1>'
+        f'<p style="font-size:13px;color:#777;margin:0 0 24px;">Período: {label_periodo}</p>'
+        '<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">'
+        'Segue o resumo dos avisos de sinistro registrados no período. Os dados completos estão na planilha Excel em anexo.</p>'
+        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>'
+        f'{card("#0071CE","Total de Casos",qtd,"sinistros encontrados")}'
+        f'{card("#00C4B4","Valor Total",formatar_brl(total_v),"soma dos sinistrados")}'
+        f'{card("#7DC242","Maior Caso",formatar_brl(maior_v),maior_nome)}'
+        '</tr></table>'
+        '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;padding:14px 18px;margin-bottom:28px;">'
+        f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
+        f'<span style="font-size:13px;color:#444;">Planilha com todos os {qtd} casos · '
+        'ID, Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor</span>'
+        '</div>'
+        '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
+        '<p style="font-size:13px;color:#666;line-height:1.7;margin:0;">Este é um relatório de validação gerado sob demanda.</p>'
+        '</div>'
+        f'<div style="background:#0071CE;padding:20px 40px;text-align:center;">{img_f}'
+        '<div style="font-size:11px;color:rgba(255,255,255,.6);margin-top:10px;">Mensagem automática — não é necessário responder</div>'
+        '</div>'
+        '</div></body></html>'
+    )
+
+
+def enviar_relatorio(buf: BytesIO, qtd: int, registros: list):
+    label_periodo = f"{INICIO.strftime('%d/%m/%Y')} a {FIM.strftime('%d/%m/%Y')}"
+    nome_arquivo  = f"Sinistros_Historico_2026_{FIM.strftime('%d%m%Y')}.xlsx"
+
+    msg = MIMEMultipart('mixed')
     msg['From']    = EMAIL_CAIXA
     msg['To']      = EMAIL_DESTINO
     msg['Subject'] = f'[TESTE] Histórico de Sinistros 2026 — {qtd} casos encontrados'
 
-    corpo = (
-        f"Lucas,\n\n"
-        f"Este é o email de validação do coletor de sinistros.\n\n"
-        f"Período coletado: {INICIO.strftime('%d/%m/%Y')} a {FIM.strftime('%d/%m/%Y')}\n"
-        f"Total de sinistros encontrados: {qtd}\n\n"
-        f"Planilha com todos os casos em anexo.\n\n"
-        f"— Automação AVLA Crédito\n"
-    )
-    msg.attach(MIMEText(corpo, 'plain', 'utf-8'))
+    alt = MIMEMultipart('alternative')
+    alt.attach(MIMEText(
+        f"Lucas,\n\nEmail de validação do coletor de sinistros.\n"
+        f"Período: {label_periodo}\nTotal: {qtd} sinistros.\n\n— Automação AVLA Crédito\n",
+        'plain', 'utf-8'
+    ))
+    alt.attach(MIMEText(gerar_html_email(qtd, registros, label_periodo, nome_arquivo), 'html', 'utf-8'))
+    msg.attach(alt)
 
-    nome_arquivo = f"Sinistros_Historico_2026_{FIM.strftime('%d%m%Y')}.xlsx"
     parte = MIMEBase('application', 'octet-stream')
     parte.set_payload(buf.read())
     encoders.encode_base64(parte)
@@ -273,7 +355,7 @@ def main():
         return
 
     excel = gerar_excel(registros)
-    enviar_relatorio(excel, len(registros))
+    enviar_relatorio(excel, len(registros), registros)
     print("Concluído.")
 
 
