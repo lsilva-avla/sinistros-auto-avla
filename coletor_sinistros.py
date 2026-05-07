@@ -52,17 +52,21 @@ def periodo_semana_anterior():
 
 
 def _select(mail, nome):
-    """Tenta selecionar uma pasta; retorna True se OK, False caso contrário."""
+    """Tenta selecionar uma pasta. Retorna (True, contagem) se OK."""
     try:
         nome_imap = f'"{nome}"' if any(c in nome for c in '[] ') else nome
-        typ, _ = mail.select(nome_imap)
-        return typ == 'OK'
+        typ, data = mail.select(nome_imap)
+        if typ == 'OK':
+            count = data[0].decode() if data and data[0] else '?'
+            return True, count
+        return False, 0
     except Exception:
-        return False
+        return False, 0
 
 
 def selecionar_pasta_completa(mail):
-    """Seleciona All Mail do Gmail independente do idioma da conta."""
+    """Seleciona All Mail do Gmail (busca mais abrangente)."""
+    # 1) Detecta via atributo \All
     try:
         _, pastas = mail.list()
         for item in pastas:
@@ -70,18 +74,21 @@ def selecionar_pasta_completa(mail):
                 continue
             decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
             if '\\All' in decoded:
-                m = re.search(r'["\s]([^\s"][^"]*[^\s"]|[^\s"])\s*$', decoded)
+                m = re.search(r'"([^"]+)"\s*$|(\S+)\s*$', decoded)
                 if m:
-                    nome = m.group(1).strip().strip('"')
-                    if _select(mail, nome):
-                        print(f"Pasta selecionada: {nome}")
+                    nome = (m.group(1) or m.group(2)).strip()
+                    ok, count = _select(mail, nome)
+                    if ok:
+                        print(f"✓ Pasta selecionada (All): {nome} — {count} msgs")
                         return
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Erro ao detectar All Mail: {e}")
 
-    for nome in ['INBOX', '[Gmail]/All Mail', '[Gmail]/Todos os e-mails']:
-        if _select(mail, nome):
-            print(f"Pasta selecionada (fallback): {nome}")
+    # 2) Fallback — All Mail antes de INBOX
+    for nome in ['[Gmail]/All Mail', '[Gmail]/Todos os e-mails', 'INBOX']:
+        ok, count = _select(mail, nome)
+        if ok:
+            print(f"✓ Pasta selecionada (fallback): {nome} — {count} msgs")
             return
 
     raise RuntimeError("Não foi possível selecionar nenhuma pasta de email.")
