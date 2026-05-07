@@ -26,7 +26,7 @@ EMAIL_CAIXA       = os.environ.get("EMAIL_CAIXA",       "mgignon@avla.com")
 APP_PASSWORD      = os.environ.get("APP_PASSWORD",       "")
 ASSUNTO_FILTRO    = os.environ.get("ASSUNTO_FILTRO",    "SINISTRO")
 REMETENTE_FILTRO  = os.environ.get("REMETENTE_FILTRO",  "notificaciones-01@avla.com")
-EMAIL_DESTINO     = "lsilva@avla.com"
+DESTINATARIOS     = ["lsilva@avla.com", "mgignon@avla.com"]
 
 INICIO = datetime(2026, 1, 1)
 FIM    = datetime.now().replace(hour=23, minute=59, second=59)
@@ -325,13 +325,13 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list):
     tem_logo = os.path.exists(logo)
 
     plain_text = (
-        f"Lucas,\n\nEmail de validação do coletor de sinistros.\n"
+        f"Olá,\n\nSegue o histórico de sinistros coletados no período.\n"
         f"Período: {label_periodo}\nTotal: {qtd} sinistros.\n\n— Automação AVLA Crédito\n"
     )
 
     msg = MIMEMultipart('mixed')
     msg['From']    = EMAIL_CAIXA
-    msg['To']      = EMAIL_DESTINO
+    msg['To']      = ', '.join(DESTINATARIOS)
     msg['Subject'] = f'[TESTE] Histórico de Sinistros 2026 — {qtd} casos encontrados'
 
     related = MIMEMultipart('related')
@@ -359,9 +359,9 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list):
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as servidor:
         servidor.starttls()
         servidor.login(EMAIL_CAIXA, APP_PASSWORD)
-        servidor.send_message(msg)
+        servidor.sendmail(EMAIL_CAIXA, DESTINATARIOS, msg.as_string())
 
-    print(f"Email enviado para {EMAIL_DESTINO} com {qtd} sinistros.")
+    print(f"Email enviado para {', '.join(DESTINATARIOS)} — {qtd} sinistros.")
 
 
 def main():
