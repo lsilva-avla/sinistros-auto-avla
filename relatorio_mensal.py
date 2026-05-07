@@ -28,7 +28,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 # =============================================================
 EMAIL_CAIXA      = os.environ.get("EMAIL_CAIXA",      "sub.credito@avla.com")
 APP_PASSWORD     = os.environ.get("APP_PASSWORD",      "")
-REMETENTE_FILTRO = os.environ.get("REMETENTE_FILTRO",  "notificaciones-01@avla.com")
+REMETENTE_FILTRO = os.environ.get("REMETENTE_FILTRO",  "sub.credito@avla.com")
 EMAIL_DESTINO    = os.environ.get("EMAIL_DESTINO",     "mgignon@avla.com")
 
 IMAP_SERVER = "imap.gmail.com"
