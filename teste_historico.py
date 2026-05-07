@@ -38,6 +38,31 @@ if not APP_PASSWORD:
     sys.exit(1)
 
 
+def selecionar_pasta_completa(mail):
+    """Seleciona All Mail do Gmail independente do idioma da conta."""
+    _, pastas = mail.list()
+    for item in pastas:
+        if item is None:
+            continue
+        decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
+        if '\\All' in decoded:
+            # formato: (\HasNoChildren \All) "/" "[Gmail]/Todos os e-mails"
+            partes = decoded.rsplit('"/"', 1)
+            if len(partes) == 2:
+                nome = partes[1].strip().strip('"')
+                typ, _ = mail.select(nome)
+                if typ == 'OK':
+                    print(f"Pasta selecionada: {nome}")
+                    return
+    # fallback por nome
+    for nome in ['[Gmail]/All Mail', '[Gmail]/Todos os e-mails', 'INBOX']:
+        typ, _ = mail.select(nome)
+        if typ == 'OK':
+            print(f"Pasta selecionada (fallback): {nome}")
+            return
+    raise RuntimeError("Não foi possível selecionar nenhuma pasta de email.")
+
+
 def extrair_numero_sinistro(assunto: str) -> str:
     m = re.search(r'N[°º]?\s*(?:DE\s+)?SINISTRO\s+(\d+)', assunto, re.IGNORECASE)
     if m:
@@ -97,7 +122,7 @@ def coletar_emails() -> list:
 
     mail = imaplib.IMAP4_SSL(IMAP_SERVER)
     mail.login(EMAIL_CAIXA, APP_PASSWORD)
-    mail.select('"[Gmail]/All Mail"')
+    selecionar_pasta_completa(mail)
 
     since  = INICIO.strftime("%d-%b-%Y")
     before = (FIM + timedelta(days=1)).strftime("%d-%b-%Y")
