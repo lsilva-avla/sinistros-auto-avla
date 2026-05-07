@@ -16,6 +16,7 @@ import pandas as pd
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email import encoders
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
@@ -239,11 +240,8 @@ def gerar_excel(registros: list, inicio: datetime, fim: datetime) -> BytesIO:
     return buf
 
 
-def _logo_b64():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'avla_logo.png')
-    if os.path.exists(path):
-        return 'data:image/png;base64,' + base64.b64encode(open(path, 'rb').read()).decode()
-    return ''
+def _logo_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'avla_logo.png')
 
 
 def parse_valor(s: str) -> float:
@@ -262,12 +260,11 @@ def formatar_brl(v: float) -> str:
     return 'R$ ' + '{:.2f}'.format(v).replace('.', ',')
 
 
-def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tipo='semanal'):
-    logo = _logo_b64()
-    img_h = (f'<img src="{logo}" alt="AVLA" style="height:52px;display:block;margin:0 auto;">'
-             if logo else '<span style="color:white;font-size:26px;font-weight:bold;">AVLA</span>')
-    img_f = (f'<img src="{logo}" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
-             if logo else '<span style="color:white;font-size:18px;font-weight:bold;">AVLA</span>')
+def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tipo='semanal', tem_logo=True):
+    img_h = ('<img src="cid:avla_logo" alt="AVLA" style="height:52px;display:block;margin:0 auto;">'
+             if tem_logo else '<span style="color:white;font-size:26px;font-weight:bold;">AVLA</span>')
+    img_f = ('<img src="cid:avla_logo" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
+             if tem_logo else '<span style="color:white;font-size:18px;font-weight:bold;">AVLA</span>')
 
     total_v = sum(parse_valor(r.get('Valor Sinistrado', '')) for r in registros)
     maior_v = max((parse_valor(r.get('Valor Sinistrado', '')) for r in registros), default=0.0)
@@ -342,13 +339,28 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, inicio: datetime, 
     msg['To']      = EMAIL_DESTINO
     msg['Subject'] = f'Relatório Semanal de Sinistros — {inicio.strftime("%d/%m")} a {fim.strftime("%d/%m/%Y")}'
 
+    logo = _logo_path()
+    tem_logo = os.path.exists(logo)
+
+    # Estrutura: related embute a imagem inline; alternative separa plain/html
+    related = MIMEMultipart('related')
+    related.attach(MIMEText(
+        gerar_html_email(qtd, registros, label_periodo, nome_arquivo, 'semanal', tem_logo),
+        'html', 'utf-8'
+    ))
+    if tem_logo:
+        img = MIMEImage(open(logo, 'rb').read(), 'png')
+        img.add_header('Content-ID', '<avla_logo>')
+        img.add_header('Content-Disposition', 'inline', filename='avla_logo.png')
+        related.attach(img)
+
     alt = MIMEMultipart('alternative')
     alt.attach(MIMEText(
         f"Olá equipe,\n\nSegue o relatório de sinistros de {label_periodo}.\n"
         f"Total: {qtd} sinistros.\n\nGerado automaticamente.\n",
         'plain', 'utf-8'
     ))
-    alt.attach(MIMEText(gerar_html_email(qtd, registros, label_periodo, nome_arquivo, 'semanal'), 'html', 'utf-8'))
+    alt.attach(related)
     msg.attach(alt)
 
     parte = MIMEBase('application', 'octet-stream')
