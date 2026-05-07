@@ -22,10 +22,11 @@ from bs4 import BeautifulSoup
 from io import BytesIO
 from openpyxl.styles import Font, PatternFill, Alignment
 
-EMAIL_CAIXA      = os.environ.get("EMAIL_CAIXA",      "mgignon@avla.com")
-APP_PASSWORD     = os.environ.get("APP_PASSWORD",      "")
-ASSUNTO_FILTRO   = os.environ.get("ASSUNTO_FILTRO",   "SINISTRO")
-EMAIL_DESTINO    = "lsilva@avla.com"
+EMAIL_CAIXA       = os.environ.get("EMAIL_CAIXA",       "mgignon@avla.com")
+APP_PASSWORD      = os.environ.get("APP_PASSWORD",       "")
+ASSUNTO_FILTRO    = os.environ.get("ASSUNTO_FILTRO",    "SINISTRO")
+REMETENTE_FILTRO  = os.environ.get("REMETENTE_FILTRO",  "notificaciones-01@avla.com")
+EMAIL_DESTINO     = "lsilva@avla.com"
 
 INICIO = datetime(2026, 1, 1)
 FIM    = datetime.now().replace(hour=23, minute=59, second=59)
@@ -128,7 +129,10 @@ def parse_corpo_email(html: str) -> dict:
                 if alias.lower() == label.lower():
                     proximo = tag.next_sibling
                     if proximo:
-                        valor = str(proximo).strip().lstrip(':').strip()
+                        if hasattr(proximo, 'get_text'):
+                            valor = proximo.get_text(strip=True).lstrip(':').strip()
+                        else:
+                            valor = str(proximo).strip().lstrip(':').strip()
                         if valor:
                             resultado[campo] = valor
                     break
@@ -170,6 +174,10 @@ def coletar_emails() -> list:
     for msg_id in ids_lista:
         _, dados = mail.fetch(msg_id, '(RFC822)')
         msg = email.message_from_bytes(dados[0][1])
+
+        remetente = str(msg.get('From', ''))
+        if REMETENTE_FILTRO and REMETENTE_FILTRO.lower() not in remetente.lower():
+            continue
 
         assunto    = str(msg.get('Subject', ''))
         data_email = email.utils.parsedate_to_datetime(msg['Date'])

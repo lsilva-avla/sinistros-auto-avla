@@ -46,12 +46,13 @@ git push -u origin main
 ### Adicionar os 4 Secrets
 **Settings → Secrets and variables → Actions → New repository secret**
 
-| Secret           | Valor                          |
-|------------------|--------------------------------|
-| `EMAIL_CAIXA`    | `mgignon@avla.com`             |
-| `APP_PASSWORD`   | senha de 16 chars gerada       |
-| `ASSUNTO_FILTRO` | `SINISTRO`                     |
-| `EMAIL_DESTINO`  | `mgignon@avla.com`             |
+| Secret             | Valor                              |
+|--------------------|------------------------------------|
+| `EMAIL_CAIXA`      | `mgignon@avla.com`                 |
+| `APP_PASSWORD`     | senha de 16 chars gerada           |
+| `ASSUNTO_FILTRO`   | `SINISTRO`                         |
+| `REMETENTE_FILTRO` | `notificaciones-01@avla.com`       |
+| `EMAIL_DESTINO`    | `mgignon@avla.com`                 |
 
 ### Testar manualmente
 Aba **Actions** → workflow → **"Run workflow"** → aguardar ~30s → verificar log.

@@ -24,4 +24,5 @@ jobs:
           EMAIL_CAIXA:      ${{ secrets.EMAIL_CAIXA }}
           APP_PASSWORD:     ${{ secrets.APP_PASSWORD }}
           ASSUNTO_FILTRO:   ${{ secrets.ASSUNTO_FILTRO }}
+          REMETENTE_FILTRO: ${{ secrets.REMETENTE_FILTRO }}
         run: python teste_historico.py
