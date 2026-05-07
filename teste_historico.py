@@ -38,28 +38,43 @@ if not APP_PASSWORD:
     sys.exit(1)
 
 
+def _select(mail, nome):
+    """Tenta selecionar uma pasta; retorna True se OK, False caso contrário."""
+    try:
+        # Nomes com colchetes ou espaços precisam de aspas no protocolo IMAP
+        nome_imap = f'"{nome}"' if any(c in nome for c in '[] ') else nome
+        typ, _ = mail.select(nome_imap)
+        return typ == 'OK'
+    except Exception:
+        return False
+
+
 def selecionar_pasta_completa(mail):
     """Seleciona All Mail do Gmail independente do idioma da conta."""
-    _, pastas = mail.list()
-    for item in pastas:
-        if item is None:
-            continue
-        decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
-        if '\\All' in decoded:
-            # formato: (\HasNoChildren \All) "/" "[Gmail]/Todos os e-mails"
-            partes = decoded.rsplit('"/"', 1)
-            if len(partes) == 2:
-                nome = partes[1].strip().strip('"')
-                typ, _ = mail.select(nome)
-                if typ == 'OK':
-                    print(f"Pasta selecionada: {nome}")
-                    return
-    # fallback por nome
-    for nome in ['[Gmail]/All Mail', '[Gmail]/Todos os e-mails', 'INBOX']:
-        typ, _ = mail.select(nome)
-        if typ == 'OK':
+    # 1) Detecta via atributo \All (independente de idioma)
+    try:
+        _, pastas = mail.list()
+        for item in pastas:
+            if item is None:
+                continue
+            decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
+            if '\\All' in decoded:
+                # Extrai nome no final da linha, com ou sem aspas
+                m = re.search(r'["\s]([^\s"][^"]*[^\s"]|[^\s"])\s*$', decoded)
+                if m:
+                    nome = m.group(1).strip().strip('"')
+                    if _select(mail, nome):
+                        print(f"Pasta selecionada: {nome}")
+                        return
+    except Exception:
+        pass
+
+    # 2) Fallback por nomes conhecidos
+    for nome in ['INBOX', '[Gmail]/All Mail', '[Gmail]/Todos os e-mails']:
+        if _select(mail, nome):
             print(f"Pasta selecionada (fallback): {nome}")
             return
+
     raise RuntimeError("Não foi possível selecionar nenhuma pasta de email.")
 
 

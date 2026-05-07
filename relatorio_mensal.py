@@ -59,26 +59,39 @@ def nome_mes(dt: datetime) -> str:
     return meses[dt.month - 1]
 
 
+def _select(mail, nome):
+    """Tenta selecionar uma pasta; retorna True se OK, False caso contrário."""
+    try:
+        nome_imap = f'"{nome}"' if any(c in nome for c in '[] ') else nome
+        typ, _ = mail.select(nome_imap)
+        return typ == 'OK'
+    except Exception:
+        return False
+
+
 def selecionar_pasta_completa(mail):
     """Seleciona All Mail do Gmail independente do idioma da conta."""
-    _, pastas = mail.list()
-    for item in pastas:
-        if item is None:
-            continue
-        decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
-        if '\\All' in decoded:
-            partes = decoded.rsplit('"/"', 1)
-            if len(partes) == 2:
-                nome = partes[1].strip().strip('"')
-                typ, _ = mail.select(nome)
-                if typ == 'OK':
-                    print(f"Pasta selecionada: {nome}")
-                    return
-    for nome in ['[Gmail]/All Mail', '[Gmail]/Todos os e-mails', 'INBOX']:
-        typ, _ = mail.select(nome)
-        if typ == 'OK':
+    try:
+        _, pastas = mail.list()
+        for item in pastas:
+            if item is None:
+                continue
+            decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
+            if '\\All' in decoded:
+                m = re.search(r'["\s]([^\s"][^"]*[^\s"]|[^\s"])\s*$', decoded)
+                if m:
+                    nome = m.group(1).strip().strip('"')
+                    if _select(mail, nome):
+                        print(f"Pasta selecionada: {nome}")
+                        return
+    except Exception:
+        pass
+
+    for nome in ['INBOX', '[Gmail]/All Mail', '[Gmail]/Todos os e-mails']:
+        if _select(mail, nome):
             print(f"Pasta selecionada (fallback): {nome}")
             return
+
     raise RuntimeError("Não foi possível selecionar nenhuma pasta de email.")
 
 
