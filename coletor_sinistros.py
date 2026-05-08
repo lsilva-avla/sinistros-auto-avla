@@ -155,9 +155,13 @@ def _buscar_pasta(mail, since, before, vistos):
         if not html_body:
             continue
 
-        campos = parse_corpo_email(html_body)
+        campos      = parse_corpo_email(html_body)
         num_assunto = extrair_numero_sinistro(assunto)
-        campos['N° Sinistro'] = num_assunto or campos.get('N° Sinistro', '')
+        num_corpo   = campos.get('N° Sinistro', '') or _extrair_num_corpo(html_body)
+        num_final   = num_assunto or num_corpo
+        if not num_final:
+            print(f"  ⚠ N° Sinistro não encontrado | assunto: {assunto[:80]}")
+        campos['N° Sinistro'] = num_final
         campos['Data']        = data_email.strftime('%d/%m/%Y')
         novos.append(campos)
 
@@ -165,11 +169,37 @@ def _buscar_pasta(mail, since, before, vistos):
 
 
 def extrair_numero_sinistro(assunto: str) -> str:
-    m = re.search(r'N[°º]?\s*(?:DE\s+)?SINISTRO\s+(\d+)', assunto, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r'\b(\d{12,})\b', assunto)
-    return m.group(1) if m else ''
+    """Tenta extrair o número do sinistro do ASSUNTO do email."""
+    padroes = [
+        r'N[°º]?\s*(?:DE\s+)?S[Ii][Nn][Ii][Ee]?[Ss][Tt][Rr][Oo]\s*[:\-]?\s*(\d+)',
+        r'S[Ii][Nn][Ii][Ee]?[Ss][Tt][Rr][Oo]\s*[N°nº#]?\s*[:\-]?\s*(\d+)',
+        r'\b(\d{6,})\b',
+    ]
+    for p in padroes:
+        m = re.search(p, assunto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ''
+
+
+def _extrair_num_corpo(html: str) -> str:
+    """Extrai número do sinistro direto do corpo do email via regex.
+    Usado como fallback quando o assunto e os campos bold não encontram o número.
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    texto = soup.get_text(separator=' ')
+
+    padroes = [
+        r'N[°º\.]\s*(?:de\s+)?[Ss]ini[es]stro\s*[:\-]?\s*(\d{4,})',
+        r'[Ss]ini[es]stro\s*[N°nº#\.]*\s*[:\-]?\s*(\d{4,})',
+        r'(?:N[°º]|No\.?|Nro\.?|Nr\.?)\s*[:\-]?\s*(\d{5,})',
+        r'\b(\d{8,})\b',
+    ]
+    for p in padroes:
+        m = re.search(p, texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ''
 
 
 def parse_corpo_email(html: str) -> dict:
