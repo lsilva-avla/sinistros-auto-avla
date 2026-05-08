@@ -27,5 +27,5 @@ jobs:
           APP_PASSWORD:     ${{ secrets.APP_PASSWORD }}
           ASSUNTO_FILTRO:   ${{ secrets.ASSUNTO_FILTRO }}
           REMETENTE_FILTRO: ${{ secrets.REMETENTE_FILTRO }}
-          EMAIL_DESTINO:    lsilva@avla.com
+          EMAIL_DESTINO:    lsilva@avla.com, mgignon@avla.com
         run: python relatorio_mensal.py
