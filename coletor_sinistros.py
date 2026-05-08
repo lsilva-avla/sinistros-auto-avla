@@ -297,6 +297,20 @@ def gerar_excel(registros: list, inicio: datetime, fim: datetime) -> BytesIO:
             max_len = max((len(str(c.value or '')) for c in col), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 55)
 
+        # Destaque: linhas da última semana em azul claro
+        hoje_d       = datetime.now().date()
+        semana_atras = hoje_d - timedelta(days=7)
+        destaque     = PatternFill(fill_type='solid', fgColor='DCF0FF')
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            try:
+                data_str = row[2].value  # coluna 'Data'
+                if data_str and datetime.strptime(str(data_str), '%d/%m/%Y').date() >= semana_atras:
+                    for cell in row:
+                        cell.fill = destaque
+            except (ValueError, TypeError):
+                pass
+
     buf.seek(0)
     return buf
 
