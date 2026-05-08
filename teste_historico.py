@@ -17,7 +17,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
 from email import encoders
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from io import BytesIO
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -26,7 +26,7 @@ EMAIL_CAIXA       = os.environ.get("EMAIL_CAIXA",       "mgignon@avla.com")
 APP_PASSWORD      = os.environ.get("APP_PASSWORD",       "")
 ASSUNTO_FILTRO    = os.environ.get("ASSUNTO_FILTRO",    "SINISTRO")
 REMETENTE_FILTRO  = os.environ.get("REMETENTE_FILTRO",  "notificaciones-01@avla.com")
-DESTINATARIOS     = ["lsilva@avla.com", "mgignon@avla.com"]
+EMAIL_DESTINO     = "lsilva@avla.com"
 
 INICIO = datetime(2026, 1, 1)
 FIM    = datetime.now().replace(hour=23, minute=59, second=59)
@@ -95,6 +95,72 @@ def selecionar_pasta_completa(mail):
     raise RuntimeError("Não foi possível selecionar nenhuma pasta de email.")
 
 
+def _detectar_lixeira(mail):
+    """Detecta o nome da pasta Lixeira/Trash do Gmail (varia por idioma da conta)."""
+    try:
+        _, pastas = mail.list()
+        for item in pastas:
+            if item is None:
+                continue
+            decoded = item.decode('utf-8') if isinstance(item, bytes) else str(item)
+            if '\\Trash' in decoded:
+                m = re.search(r'"([^"]+)"\s*$|(\S+)\s*$', decoded)
+                if m:
+                    return (m.group(1) or m.group(2)).strip()
+    except Exception as e:
+        print(f"Erro ao detectar Lixeira: {e}")
+    return None
+
+
+def _buscar_pasta(mail, since, before, vistos):
+    """Busca sinistros na pasta atualmente selecionada.
+    Retorna (lista_registros, set_vistos_atualizado) — deduplicação por Message-ID.
+    """
+    try:
+        _, ids = mail.search(None, f'(SUBJECT "{ASSUNTO_FILTRO}" SINCE "{since}" BEFORE "{before}")')
+    except Exception as e:
+        print(f"Erro ao buscar na pasta: {e}")
+        return [], vistos
+
+    novos = []
+    for msg_id in ids[0].split():
+        try:
+            _, dados = mail.fetch(msg_id, '(RFC822)')
+            msg = email.message_from_bytes(dados[0][1])
+        except Exception:
+            continue
+
+        mid = msg.get('Message-ID', f'_noid_{msg_id.decode()}_')
+        if mid in vistos:
+            continue
+        vistos.add(mid)
+
+        remetente = str(msg.get('From', ''))
+        if REMETENTE_FILTRO and REMETENTE_FILTRO.lower() not in remetente.lower():
+            continue
+
+        assunto    = str(msg.get('Subject', ''))
+        data_email = email.utils.parsedate_to_datetime(msg['Date'])
+
+        html_body = None
+        for part in msg.walk():
+            if part.get_content_type() == 'text/html':
+                payload   = part.get_payload(decode=True)
+                charset   = part.get_content_charset() or 'utf-8'
+                html_body = payload.decode(charset, errors='ignore')
+                break
+
+        if not html_body:
+            continue
+
+        campos = parse_corpo_email(html_body)
+        campos['N° Sinistro'] = extrair_numero_sinistro(assunto)
+        campos['Data']        = data_email.strftime('%d/%m/%Y')
+        novos.append(campos)
+
+    return novos, vistos
+
+
 def extrair_numero_sinistro(assunto: str) -> str:
     m = re.search(r'N[°º]?\s*(?:DE\s+)?SINISTRO\s+(\d+)', assunto, re.IGNORECASE)
     if m:
@@ -151,54 +217,38 @@ def parse_corpo_email(html: str) -> dict:
 
 
 def coletar_emails() -> list:
-    from datetime import timedelta
     print(f"Conectando em {EMAIL_CAIXA}...")
     print(f"Período: {INICIO.strftime('%d/%m/%Y')} a {FIM.strftime('%d/%m/%Y')}")
 
     mail = imaplib.IMAP4_SSL(IMAP_SERVER)
     mail.login(EMAIL_CAIXA, APP_PASSWORD)
-    selecionar_pasta_completa(mail)
 
     since  = INICIO.strftime("%d-%b-%Y")
     before = (FIM + timedelta(days=1)).strftime("%d-%b-%Y")
 
-    criterio = f'(SUBJECT "{ASSUNTO_FILTRO}" SINCE "{since}" BEFORE "{before}")'
-    print(f"Critério de busca: {criterio}")
-
-    _, ids = mail.search(None, criterio)
-
-    ids_lista = ids[0].split()
-    print(f"Emails encontrados: {len(ids_lista)}")
-
+    vistos    = set()
     registros = []
-    for msg_id in ids_lista:
-        _, dados = mail.fetch(msg_id, '(RFC822)')
-        msg = email.message_from_bytes(dados[0][1])
 
-        remetente = str(msg.get('From', ''))
-        if REMETENTE_FILTRO and REMETENTE_FILTRO.lower() not in remetente.lower():
-            continue
+    # 1) All Mail (emails ativos + arquivados)
+    selecionar_pasta_completa(mail)
+    novos, vistos = _buscar_pasta(mail, since, before, vistos)
+    print(f"All Mail: {len(novos)} sinistros encontrados")
+    registros.extend(novos)
 
-        assunto    = str(msg.get('Subject', ''))
-        data_email = email.utils.parsedate_to_datetime(msg['Date'])
-
-        html_body = None
-        for part in msg.walk():
-            if part.get_content_type() == 'text/html':
-                payload   = part.get_payload(decode=True)
-                charset   = part.get_content_charset() or 'utf-8'
-                html_body = payload.decode(charset, errors='ignore')
-                break
-
-        if not html_body:
-            continue
-
-        campos = parse_corpo_email(html_body)
-        campos['N° Sinistro'] = extrair_numero_sinistro(assunto)
-        campos['Data']        = data_email.strftime('%d/%m/%Y')
-        registros.append(campos)
+    # 2) Lixeira (emails descartados acidentalmente)
+    nome_lixeira = _detectar_lixeira(mail)
+    if nome_lixeira:
+        ok, count = _select(mail, nome_lixeira)
+        if ok:
+            print(f"Lixeira ({nome_lixeira}): {count} msgs — buscando sinistros...")
+            novos, vistos = _buscar_pasta(mail, since, before, vistos)
+            print(f"Lixeira: +{len(novos)} sinistros adicionais")
+            registros.extend(novos)
+    else:
+        print("Pasta Lixeira não detectada — pulando.")
 
     mail.logout()
+    print(f"Total coletado: {len(registros)} sinistros")
     return registros
 
 
@@ -274,10 +324,24 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
     if len(maior_nome) > 22:
         maior_nome = maior_nome[:22] + '…'
 
-    def card(cor, label, val, sub):
+    hoje         = datetime.now()
+    semana_atras = hoje - timedelta(days=7)
+    mes_atras    = hoje - timedelta(days=30)
+
+    def _parse_dt(s):
+        try:
+            return datetime.strptime(s, '%d/%m/%Y')
+        except Exception:
+            return None
+
+    datas        = [_parse_dt(r.get('Data', '')) for r in registros]
+    casos_semana = sum(1 for d in datas if d and d >= semana_atras)
+    casos_mes    = sum(1 for d in datas if d and d >= mes_atras)
+
+    def card(cor, label, val, sub, width='33%'):
         fs = '22' if label == 'Total de Casos' else '18'
         return (
-            f'<td width="33%" style="padding:0 5px;">'
+            f'<td width="{width}" style="padding:0 5px;">'
             f'<div style="border:1px solid #e0e0e0;border-top:4px solid {cor};border-radius:4px;padding:16px 12px 12px;text-align:center;">'
             f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888;margin-bottom:8px;">{label}</div>'
             f'<div style="font-size:{fs}px;font-weight:800;color:#1a1a1a;line-height:1.1;">{val}</div>'
@@ -297,10 +361,14 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
         f'<p style="font-size:13px;color:#777;margin:0 0 24px;">Período: {label_periodo}</p>'
         '<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">'
         'Segue o resumo dos avisos de sinistro registrados no período. Os dados completos estão na planilha Excel em anexo.</p>'
-        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>'
+        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;"><tr>'
         f'{card("#0071CE","Total de Casos",qtd,"sinistros encontrados")}'
         f'{card("#00C4B4","Valor Total",formatar_brl(total_v),"soma dos sinistrados")}'
         f'{card("#7DC242","Maior Caso",formatar_brl(maior_v),maior_nome)}'
+        '</tr></table>'
+        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>'
+        f'{card("#00A3D9","Última Semana",casos_semana,"últimos 7 dias","50%")}'
+        f'{card("#003087","Último Mês",casos_mes,"últimos 30 dias","50%")}'
         '</tr></table>'
         '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;padding:14px 18px;margin-bottom:28px;">'
         f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
@@ -325,13 +393,13 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list):
     tem_logo = os.path.exists(logo)
 
     plain_text = (
-        f"Olá,\n\nSegue o histórico de sinistros coletados no período.\n"
+        f"Lucas,\n\nEmail de validação do coletor de sinistros.\n"
         f"Período: {label_periodo}\nTotal: {qtd} sinistros.\n\n— Automação AVLA Crédito\n"
     )
 
     msg = MIMEMultipart('mixed')
     msg['From']    = EMAIL_CAIXA
-    msg['To']      = ', '.join(DESTINATARIOS)
+    msg['To']      = EMAIL_DESTINO
     msg['Subject'] = f'[TESTE] Histórico de Sinistros 2026 — {qtd} casos encontrados'
 
     related = MIMEMultipart('related')
@@ -359,9 +427,9 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list):
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as servidor:
         servidor.starttls()
         servidor.login(EMAIL_CAIXA, APP_PASSWORD)
-        servidor.sendmail(EMAIL_CAIXA, DESTINATARIOS, msg.as_string())
+        servidor.send_message(msg)
 
-    print(f"Email enviado para {', '.join(DESTINATARIOS)} — {qtd} sinistros.")
+    print(f"Email enviado para {EMAIL_DESTINO} — {qtd} sinistros.")
 
 
 def main():
