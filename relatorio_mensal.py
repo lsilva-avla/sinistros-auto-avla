@@ -490,12 +490,14 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, inicio: datetime, 
     parte.add_header('Content-Disposition', f'attachment; filename="{nome_arquivo}"')
     msg.attach(parte)
 
+    destinatarios = [e.strip() for e in EMAIL_DESTINO.split(',') if e.strip()]
+
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as servidor:
         servidor.starttls()
         servidor.login(EMAIL_CAIXA, APP_PASSWORD)
-        servidor.send_message(msg)
+        servidor.sendmail(EMAIL_CAIXA, destinatarios, msg.as_string())
 
-    print(f"Relatório mensal enviado para {EMAIL_DESTINO} — {qtd} sinistros em {label_mes}.")
+    print(f"Relatório mensal enviado para {', '.join(destinatarios)} — {qtd} sinistros em {label_mes}.")
 
 
 def main():
