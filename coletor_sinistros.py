@@ -156,7 +156,8 @@ def _buscar_pasta(mail, since, before, vistos):
             continue
 
         campos = parse_corpo_email(html_body)
-        campos['N° Sinistro'] = extrair_numero_sinistro(assunto)
+        num_assunto = extrair_numero_sinistro(assunto)
+        campos['N° Sinistro'] = num_assunto or campos.get('N° Sinistro', '')
         campos['Data']        = data_email.strftime('%d/%m/%Y')
         novos.append(campos)
 
@@ -176,14 +177,24 @@ def parse_corpo_email(html: str) -> dict:
     texto = soup.get_text(separator='\n')
 
     campos_aliases = {
+        'N° Sinistro':      ['N° Sinistro', 'Nº Sinistro', 'N° de Sinistro',
+                             'Número do Sinistro', 'Número de Sinistro',
+                             'N° de Siniestro', 'Nº de Siniestro',
+                             'Número de Siniestro', 'No. de Siniestro',
+                             'No de Siniestro', 'Siniestro'],
         'Segurado':         ['Segurado'],
         'Filial':           ['Filial'],
-        'Apólice':          ['Apólice', 'Apolice'],
-        'Devedor':          ['Devedor'],
-        'CNPJ do Devedor':  ['CNPJ do devedor', 'CNPJ do Devedor', 'CNPJ'],
-        'Ocorrência':       ['Ocorrência', 'Ocorrencia'],
-        'Declaração':       ['Declaração', 'Declaracao'],
-        'Valor Sinistrado': ['Valor sinistrado', 'Valor Sinistrado'],
+        'Apólice':          ['Apólice', 'Apolice', 'Póliza', 'Poliza'],
+        'Devedor':          ['Devedor', 'Deudor'],
+        'CNPJ do Devedor':  ['CNPJ do devedor', 'CNPJ do Devedor', 'CNPJ',
+                             'RUT', 'RUT del Deudor'],
+        'Ocorrência':       ['Ocorrência', 'Ocorrencia', 'Siniestro',
+                             'Tipo de Siniestro'],
+        'Declaração':       ['Declaração', 'Declaracao', 'Fecha de Declaración',
+                             'Fecha Declaracion'],
+        'Valor Sinistrado': ['Valor sinistrado', 'Valor Sinistrado',
+                             'Monto Sinistrado', 'Monto del Siniestro',
+                             'Valor do Sinistro'],
     }
 
     resultado = {}
