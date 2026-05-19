@@ -759,7 +759,11 @@ def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
                 cnpj_d = _normalizar_cnpj(r.get('CNPJ do Devedor', ''))
                 r['Grupo Econômico'] = lookup_grupo.get(cnpj_d, '')
 
-            d = _parse_date(r.get('Data', ''))
+            # Usa Data se disponível; senão cai para Declaração (casos manuais costumam
+            # ter só a data de declaração — sem isso a conversão PTAX nunca dispara)
+            d = _parse_date(r.get('Data', '') or r.get('Declaração', ''))
+            if not r.get('Data') and r.get('Declaração'):
+                r['Data'] = r['Declaração']   # garante que Data aparece na planilha
             r.setdefault('Data_ISO', d.strftime('%Y-%m-%d') if d.year >= 2020 else '')
             r.setdefault('Mes_Ano',  d.strftime('%Y-%m')    if d.year >= 2020 else '')
 
@@ -1017,13 +1021,16 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
                 'fields': 'userEnteredFormat.backgroundColor',
             }})
 
-        # 8. Laranja nos casos manuais (sobrescreve azul claro se ambos coincidirem)
+        # 8. Laranja apenas nas células ID (col A) e Origem (última col) das linhas manuais
+        _ci_id     = 0                                   # coluna A — ID
+        _ci_origem = COLUNAS_SHEETS.index('Origem')      # 0-based
         for ln in linhas_manuais:
-            requests.append({'repeatCell': {
-                'range': _rng(ln - 1, ln),
-                'cell': {'userEnteredFormat': {'backgroundColor': C_LARANJA}},
-                'fields': 'userEnteredFormat.backgroundColor',
-            }})
+            for _ci in (_ci_id, _ci_origem):
+                requests.append({'repeatCell': {
+                    'range': _rng(ln - 1, ln, _ci, _ci + 1),
+                    'cell': {'userEnteredFormat': {'backgroundColor': C_LARANJA}},
+                    'fields': 'userEnteredFormat.backgroundColor',
+                }})
 
         sh.batch_update({'requests': requests})
         modo = 'ontem' if tem_ontem else f'últimos 7 dias'
