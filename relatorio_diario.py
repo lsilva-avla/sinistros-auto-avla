@@ -359,6 +359,14 @@ def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
     return registros
 
 
+def _parse_date(s: str) -> date:
+    """Converte string dd/mm/yyyy para date; retorna date mínima em caso de erro."""
+    try:
+        return datetime.strptime(s, '%d/%m/%Y').date()
+    except (ValueError, TypeError):
+        return date(2000, 1, 1)
+
+
 # ─────────────────────────────────────────────
 #  Google Sheets
 # ─────────────────────────────────────────────
@@ -430,6 +438,7 @@ def escrever_sheets(registros: list):
 # ─────────────────────────────────────────────
 
 def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO:
+    """Gera Excel com TODOS os registros do ano. Destaca ontem ou últimos 7 dias."""
     colunas = [
         'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
         'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
@@ -446,7 +455,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
 
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        nome_aba = f"Sinistros {ontem.strftime('%d-%m-%Y')}"
+        nome_aba = f"Sinistros 2026"
         df.to_excel(writer, index=False, sheet_name=nome_aba)
         ws = writer.sheets[nome_aba]
 
@@ -471,21 +480,18 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
             max_len = max((len(str(c.value or '')) for c in col), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 55)
 
-        # Destaque de linhas:
-        # - Modo normal: só as linhas de ontem (D-1)
-        # - Modo fallback: todas as linhas dos últimos 7 dias
+        # Destaque:
+        # - ontem (D-1) se tiver casos → azul claro
+        # - últimos 7 dias se fallback → azul claro
         destaque  = PatternFill(fill_type='solid', fgColor='DCF0FF')
         ontem_str = ontem.strftime('%d/%m/%Y')
-        corte_7d  = datetime.now().date() - timedelta(days=7)
+        corte_7d  = date.today() - timedelta(days=7)
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             try:
                 data_str = str(row[2].value or '')
-                if fallback:
-                    data_row = datetime.strptime(data_str, '%d/%m/%Y').date()
-                    destacar = data_row >= corte_7d
-                else:
-                    destacar = data_str == ontem_str
+                data_row = datetime.strptime(data_str, '%d/%m/%Y').date()
+                destacar = (data_row >= corte_7d) if fallback else (data_str == ontem_str)
                 if destacar:
                     for cell in row:
                         cell.fill = destaque
@@ -521,7 +527,7 @@ def formatar_brl(v: float) -> str:
 
 
 def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
-                     tem_logo=True, fallback=False, casos_ontem=0):
+                     tem_logo=True, fallback=False, casos_ontem=0, total_ano=0):
     img_h = ('<img src="cid:avla_logo" alt="AVLA" style="height:52px;display:block;margin:0 auto;">'
              if tem_logo else '<span style="color:white;font-size:26px;font-weight:bold;">AVLA</span>')
     img_f = ('<img src="cid:avla_logo" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
@@ -608,8 +614,15 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
         '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;'
         'padding:14px 18px;margin-bottom:28px;">'
         f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
-        f'<span style="font-size:13px;color:#444;">Planilha com {qtd} casos · '
-        'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
+        + (
+            f'<span style="font-size:13px;color:#444;">'
+            f'Planilha com <strong>{total_ano}</strong> casos em 2026 · '
+            f'destacados: {qtd} {"ontem" if not fallback else "nos últimos 7 dias"} · '
+            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
+            if total_ano and total_ano > qtd else
+            f'<span style="font-size:13px;color:#444;">Planilha com {qtd} casos · '
+            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
+        )
         '</div>'
         '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
         '<p style="font-size:13px;color:#666;line-height:1.7;margin:0;">'
@@ -625,7 +638,7 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
 
 
 def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, ontem: date,
-                     fallback: bool = False):
+                     fallback: bool = False, total_ano: int = 0):
     label_periodo = ontem.strftime('%d/%m/%Y')
     nome_arquivo  = f"Sinistros_Diario_{ontem.strftime('%d%m%Y')}.xlsx"
 
@@ -653,7 +666,7 @@ def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, ontem: date,
     related = MIMEMultipart('related')
     related.attach(MIMEText(
         gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
-                         tem_logo, fallback=fallback),
+                         tem_logo, fallback=fallback, total_ano=total_ano),
         'html', 'utf-8'
     ))
     if tem_logo:
@@ -689,36 +702,50 @@ def main():
     agora = datetime.now()
     print(f"[{agora.strftime('%d/%m/%Y %H:%M')}] Iniciando relatório diário AVLA...")
 
-    inicio_d1, fim_d1 = periodo_ontem()
-    ontem    = inicio_d1.date()
-    fallback = False
+    ontem     = date.today() - timedelta(days=1)
+    ontem_str = ontem.strftime('%d/%m/%Y')
 
-    print(f"Buscando D-1: {ontem.strftime('%d/%m/%Y')}")
-    registros = coletar_emails(inicio_d1, fim_d1)
+    # Coleta SEMPRE todos os registros de 2026 até hoje
+    inicio_ano = datetime(2026, 1, 1, 0, 0, 0)
+    fim_hoje   = datetime(date.today().year, date.today().month, date.today().day, 23, 59, 59)
 
-    if not registros:
-        print("Nenhum sinistro ontem — acionando fallback: últimos 7 dias.")
-        inicio_7d = datetime.combine(date.today() - timedelta(days=7),
-                                     datetime.min.time())
-        fim_7d    = datetime.combine(date.today() - timedelta(days=1),
-                                     datetime.max.time().replace(microsecond=0))
-        registros = coletar_emails(inicio_7d, fim_7d)
-        fallback  = True
+    print(f"Buscando 2026 completo até {date.today().strftime('%d/%m/%Y')}...")
+    registros_ano = coletar_emails(inicio_ano, fim_hoje)
 
-    if not registros:
-        print("Nenhum sinistro nos últimos 7 dias. Email não enviado.")
+    if not registros_ano:
+        print("Nenhum sinistro encontrado em 2026. Email não enviado.")
         return
 
-    # Enriquece com tabelas auxiliares
+    # Determina modo de exibição: D-1 normal ou fallback (7 dias)
+    registros_ontem = [r for r in registros_ano if r.get('Data') == ontem_str]
+    fallback = len(registros_ontem) == 0
+
+    if fallback:
+        print(f"Nenhum sinistro em {ontem_str} — modo fallback (últimos 7 dias).")
+    else:
+        print(f"{len(registros_ontem)} sinistro(s) em {ontem_str} — modo normal.")
+
+    # Enriquece TODOS os registros do ano
     lookup_cnae, lookup_grupo = carregar_tabelas_auxiliares()
-    registros = enriquecer(registros, lookup_cnae, lookup_grupo)
+    registros_ano = enriquecer(registros_ano, lookup_cnae, lookup_grupo)
 
-    # Escreve na base online
-    escrever_sheets(registros)
+    # Escreve tudo na base online (dedup por N° Sinistro)
+    escrever_sheets(registros_ano)
 
-    # Gera Excel e envia email
-    excel = gerar_excel(registros, ontem, fallback=fallback)
-    enviar_relatorio(excel, len(registros), registros, ontem, fallback=fallback)
+    # Re-filtra registros para exibição nos cards (após enriquecimento)
+    if not fallback:
+        registros_display = [r for r in registros_ano if r.get('Data') == ontem_str]
+    else:
+        corte_7d = date.today() - timedelta(days=7)
+        registros_display = [r for r in registros_ano
+                             if _parse_date(r.get('Data', '')) >= corte_7d]
+
+    # Excel com TODOS os registros do ano; destaque no período de display
+    excel = gerar_excel(registros_ano, ontem, fallback=fallback)
+
+    # Email: cards do período de display; descrição do Excel mostra total do ano
+    enviar_relatorio(excel, len(registros_display), registros_display, ontem,
+                     fallback=fallback, total_ano=len(registros_ano))
 
     print("Concluído com sucesso.")
 
