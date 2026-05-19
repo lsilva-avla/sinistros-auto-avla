@@ -460,12 +460,37 @@ def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
         r['Data_ISO'] = d.strftime('%Y-%m-%d') if d.year >= 2020 else ''
         r['Mes_Ano']  = d.strftime('%Y-%m')    if d.year >= 2020 else ''
 
-        # Valor BRL (numérico), cotação PTAX e conversão USD
-        valor_brl    = parse_valor(r.get('Valor Sinistrado', ''))
-        r['Valor BRL'] = round(valor_brl, 2)
-        ptax = _get_ptax(d.year, d.month) if d.year >= 2020 and valor_brl else 0.0
-        r['FX PTAX']   = ptax
-        r['Valor USD']  = round(valor_brl / ptax, 2) if ptax else 0.0
+        # Detecta moeda e extrai valor original; converte para BRL se necessário
+        moeda, valor_original = _detect_moeda(r.get('Valor Sinistrado', ''))
+        r['Moeda']          = moeda
+        r['Valor Original'] = round(valor_original, 2)
+
+        if d.year >= 2020 and valor_original:
+            if moeda == 'BRL':
+                ptax_usd       = _get_ptax(d.year, d.month, 'USD')
+                r['Valor BRL'] = round(valor_original, 2)
+                r['FX PTAX']   = ptax_usd
+                r['Valor USD'] = round(valor_original / ptax_usd, 2) if ptax_usd else 0.0
+            elif moeda == 'USD':
+                ptax_usd       = _get_ptax(d.year, d.month, 'USD')
+                r['Valor BRL'] = round(valor_original * ptax_usd, 2) if ptax_usd else 0.0
+                r['FX PTAX']   = ptax_usd
+                r['Valor USD'] = round(valor_original, 2)
+            elif moeda == 'EUR':
+                ptax_eur       = _get_ptax(d.year, d.month, 'EUR')
+                ptax_usd       = _get_ptax(d.year, d.month, 'USD')
+                valor_brl      = round(valor_original * ptax_eur, 2) if ptax_eur else 0.0
+                r['Valor BRL'] = valor_brl
+                r['FX PTAX']   = ptax_usd  # referência USD para Valor USD
+                r['Valor USD'] = round(valor_brl / ptax_usd, 2) if ptax_usd else 0.0
+            else:
+                r['Valor BRL'] = 0.0
+                r['FX PTAX']   = 0.0
+                r['Valor USD'] = 0.0
+        else:
+            r['Valor BRL'] = 0.0
+            r['FX PTAX']   = 0.0
+            r['Valor USD'] = 0.0
 
     total    = len(registros)
     com_cnae = total - len(sem_cnae)
@@ -490,19 +515,19 @@ def _parse_date(s: str) -> date:
 
 _ptax_cache: dict = {}
 
-def _get_ptax(ano: int, mes: int) -> float:
+def _get_ptax(ano: int, mes: int, moeda: str = 'USD') -> float:
     """
-    Retorna a cotação USD/BRL (PTAX venda) do último dia útil do mês via BCB.
+    Cotação BRL por 1 unidade da moeda (PTAX venda) do último dia útil do mês via BCB.
+    Suporta: USD (padrão), EUR e demais moedas aceitas pelo BCB.
     Para o mês corrente, usa o último dia disponível (até ontem).
-    Resultados em cache para evitar chamadas repetidas por mês.
+    Cache por (moeda, ano, mes) para evitar chamadas repetidas.
     """
-    chave = (ano, mes)
+    chave = (moeda, ano, mes)
     if chave in _ptax_cache:
         return _ptax_cache[chave]
 
     hoje   = date.today()
     ultimo = calendar.monthrange(ano, mes)[1]
-    # Mês corrente: não ultrapassa ontem
     if ano == hoje.year and mes == hoje.month:
         ultimo = min(ultimo, (hoje - timedelta(days=1)).day)
 
@@ -511,11 +536,18 @@ def _get_ptax(ano: int, mes: int) -> float:
         if d.month != mes:
             break
         data_str = d.strftime('%m-%d-%Y')
-        url = (
-            'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
-            f'CotacaoDolarDia(dataCotacao=@d)?@d=%27{data_str}%27'
-            '&$format=json&$select=cotacaoVenda'
-        )
+        if moeda == 'USD':
+            url = (
+                'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
+                f'CotacaoDolarDia(dataCotacao=@d)?@d=%27{data_str}%27'
+                '&$format=json&$select=cotacaoVenda'
+            )
+        else:
+            url = (
+                'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
+                f'CotacaoMoedaDia(moeda=@m,dataCotacao=@d)?@m=%27{moeda}%27&@d=%27{data_str}%27'
+                '&$format=json&$select=cotacaoVenda'
+            )
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/json'})
             with urllib.request.urlopen(req, timeout=8) as resp:
@@ -523,14 +555,66 @@ def _get_ptax(ano: int, mes: int) -> float:
                 if valores:
                     taxa = float(valores[-1]['cotacaoVenda'])
                     _ptax_cache[chave] = taxa
-                    print(f"  PTAX {ano}/{mes:02d}: R$ {taxa:.4f} (ref. {d})")
+                    print(f"  PTAX {moeda} {ano}/{mes:02d}: R$ {taxa:.4f} (ref. {d})")
                     return taxa
         except Exception:
             pass
 
-    print(f"  [!] PTAX nao encontrada para {ano}/{mes:02d} — Valor USD zerado")
+    print(f"  [!] PTAX {moeda} nao encontrada para {ano}/{mes:02d}")
     _ptax_cache[chave] = 0.0
     return 0.0
+
+
+def _detect_moeda(s: str):
+    """
+    Detecta a moeda e extrai o valor numérico de uma string de valor monetário.
+    Suporta formato brasileiro: ponto = separador de milhar, vírgula = decimal.
+
+    Exemplos:
+      "R$ 192.434,86"   -> ('BRL', 192434.86)
+      "US$ 37.668,24"   -> ('USD', 37668.24)
+      "USS 11.210,85"   -> ('USD', 11210.85)
+      "2.321.118,00 €"  -> ('EUR', 2321118.0)
+      "USD 1.234,56"    -> ('USD', 1234.56)
+
+    Retorna (moeda: str, valor: float)
+    """
+    s = str(s).strip() if s else ''
+    if not s or s.lower() in ('nan', 'none', ''):
+        return 'BRL', 0.0
+
+    s_upper = s.upper()
+
+    # Detecta moeda pela presença de símbolos / siglas
+    if any(tok in s_upper for tok in ('US$', 'USS', 'USD', 'U$S')):
+        moeda = 'USD'
+    elif '€' in s or 'EUR' in s_upper:
+        moeda = 'EUR'
+    else:
+        moeda = 'BRL'   # R$, RS, BRL, ou sem prefixo
+
+    # Extrai apenas dígitos, ponto e vírgula
+    nums = re.sub(r'[^\d.,]', '', s)
+    if not nums:
+        return moeda, 0.0
+
+    # Formato BR: vírgula = decimal, ponto = milhar
+    if ',' in nums:
+        nums = nums.replace('.', '').replace(',', '.')
+    elif nums.count('.') > 1:
+        # Múltiplos pontos sem vírgula → todos são separadores de milhar
+        nums = nums.replace('.', '')
+    elif '.' in nums:
+        # Um único ponto sem vírgula — heurística: 3 dígitos após ponto = milhar
+        after_dot = nums.split('.')[1]
+        if len(after_dot) == 3:
+            nums = nums.replace('.', '')
+        # else: trata o ponto como decimal (ex: "1.5" = 1.5)
+
+    try:
+        return moeda, float(nums)
+    except (ValueError, TypeError):
+        return moeda, 0.0
 
 
 # ─────────────────────────────────────────────
@@ -541,10 +625,13 @@ COLUNAS_SHEETS = [
     'ID', 'N° Sinistro', 'Data', 'Data_ISO', 'Mes_Ano',
     'Segurado', 'Filial', 'Apólice',
     'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
-    'Valor Sinistrado', 'Valor BRL', 'FX PTAX', 'Valor USD',
+    'Valor Sinistrado', 'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
     'Vigencia Inicio', 'Vigencia Fim',
     'SETOR', 'SUBSETOR', 'Grupo Econômico',
 ]
+
+# Colunas que devem ser gravadas como número (float) no Sheets
+_COLUNAS_NUMERICAS = {'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD'}
 
 
 def escrever_sheets(registros: list):
@@ -599,11 +686,38 @@ def escrever_sheets(registros: list):
 
         rows = []
         for i, r in enumerate(novos, start=prox_id):
-            row = [i] + [str(r.get(c, '') or '') for c in COLUNAS_SHEETS[1:]]
+            row = [i]
+            for c in COLUNAS_SHEETS[1:]:
+                val = r.get(c, '') or ''
+                if c in _COLUNAS_NUMERICAS:
+                    try:
+                        row.append(float(val))
+                    except (ValueError, TypeError):
+                        row.append(0.0)
+                else:
+                    row.append(str(val))
             rows.append(row)
 
         aba.append_rows(rows, value_input_option='USER_ENTERED')
         print(f"Sheets: {len(novos)} novos registros inseridos (total agora: {prox_id + len(novos) - 1}).")
+
+        # Formata coluna Valor BRL como moeda R$
+        try:
+            col_brl = COLUNAS_SHEETS.index('Valor BRL') + 1   # 1-based
+            # Converte índice numérico em letra(s) de coluna Excel (A, B, ..., Z, AA, ...)
+            def _col_letter(n):
+                s = ''
+                while n > 0:
+                    n, r = divmod(n - 1, 26)
+                    s = chr(65 + r) + s
+                return s
+            letra = _col_letter(col_brl)
+            aba.format(f'{letra}2:{letra}50000', {
+                'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
+            })
+            print(f"  > Coluna Valor BRL ({letra}) formatada como moeda R$.")
+        except Exception as e:
+            print(f"  [!] Nao foi possivel formatar Valor BRL: {e}")
 
     except Exception as e:
         print(f"Erro ao escrever no Sheets (não fatal): {e}")
@@ -709,9 +823,9 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
     img_f = ('<img src="cid:avla_logo" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
              if tem_logo else '<span style="color:white;font-size:18px;font-weight:bold;">AVLA</span>')
 
-    total_v = sum(parse_valor(r.get('Valor Sinistrado', '')) for r in registros)
-    maior_v = max((parse_valor(r.get('Valor Sinistrado', '')) for r in registros), default=0.0)
-    maior_r = next((r for r in registros if parse_valor(r.get('Valor Sinistrado', '')) == maior_v), {})
+    total_v = sum(float(r.get('Valor BRL') or 0) for r in registros)
+    maior_v = max((float(r.get('Valor BRL') or 0) for r in registros), default=0.0)
+    maior_r = next((r for r in registros if float(r.get('Valor BRL') or 0) == maior_v), {})
     maior_nome = maior_r.get('Devedor', maior_r.get('Segurado', '—'))
     if len(maior_nome) > 22:
         maior_nome = maior_nome[:22] + '…'
