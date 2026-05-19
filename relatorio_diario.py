@@ -300,6 +300,69 @@ def _tc(s) -> str:
     return v.title()
 
 
+def _normalizar_apolice(v) -> str:
+    """
+    Normaliza número de apólice para dígitos puros (ex: '1002022000031').
+    Aceita: int, float, '1002022000031', '1002022000031.0',
+            '1002-022-000031', 'APL-1002022000031', '1002 022 000031'.
+    """
+    s = str(v).strip() if v is not None else ''
+    if not s or s.lower() in ('nan', 'none', ''):
+        return ''
+    # Tenta int(float) primeiro (resolve o '.0' de células numéricas)
+    try:
+        return str(int(float(s)))
+    except (ValueError, TypeError):
+        pass
+    # Fallback: extrai só os dígitos (resolve traços, prefixos, espaços internos)
+    return re.sub(r'\D', '', s)
+
+
+def _normalizar_cnpj(v) -> str:
+    """
+    Normaliza CNPJ para 14 dígitos puros com zero à esquerda preservado.
+    Aceita: '03.439.316/0001-72', '03439316000172', '3439316000172' (faltando 0).
+    """
+    digits = re.sub(r'\D', '', str(v or ''))
+    if not digits:
+        return ''
+    # CNPJ tem 14 dígitos; CPF tem 11 — garante zero-padding correto
+    if len(digits) == 13:          # zero à esquerda foi perdido
+        digits = digits.zfill(14)
+    elif len(digits) == 10:        # CPF sem zero à esquerda
+        digits = digits.zfill(11)
+    return digits
+
+
+def _find_col(df, *keywords):
+    """
+    Localiza coluna pelo nome com 3 níveis de precisão (case-insensitive):
+      1. Correspondência exata
+      2. Nome da coluna COMEÇA COM o keyword (evita 'Id Grupo Econ.' bater em 'grupo econ')
+      3. Contém o keyword (fallback amplo)
+    Aceita múltiplos keywords alternativos — retorna a primeira coluna que bater.
+    """
+    cols_lower = {str(c).lower(): c for c in df.columns}
+    for kw in keywords:
+        kw_l = kw.lower()
+        # Nível 1 — exato
+        if kw_l in cols_lower:
+            return cols_lower[kw_l]
+    for kw in keywords:
+        kw_l = kw.lower()
+        # Nível 2 — começa com keyword
+        for cl, c in cols_lower.items():
+            if cl.startswith(kw_l):
+                return c
+    for kw in keywords:
+        kw_l = kw.lower()
+        # Nível 3 — contém keyword (fallback)
+        for cl, c in cols_lower.items():
+            if kw_l in cl:
+                return c
+    return None
+
+
 def carregar_tabelas_auxiliares():
     """Carrega lookups de SEGURADOS_CNAE e GRUPO_ECONOMICO."""
     path_cnae  = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
@@ -312,21 +375,25 @@ def carregar_tabelas_auxiliares():
     if os.path.exists(path_cnae):
         try:
             df = pd.read_excel(path_cnae)
-            # poliza é int64 no Excel → str sem .0
-            df['poliza'] = df['poliza'].apply(
-                lambda v: str(int(float(str(v).strip()))) if str(v).strip() not in ('', 'nan') else ''
-            )
+            # Localiza colunas por nome — robusto contra renomeações
+            col_pol  = _find_col(df, 'poliza', 'apolice', 'apólice') or df.columns[0]
+            col_vi   = _find_col(df, 'vigencia inicio', 'vigência inicio', 'inicio') or 'Vigencia Inicio'
+            col_vf   = _find_col(df, 'vigencia fim',    'vigência fim',    'fim')    or 'Vigencia Fim'
+            col_set  = _find_col(df, 'setor')    or 'SETOR'
+            col_sub  = _find_col(df, 'subsetor') or 'SUBSETOR'
+            print(f"  > CNAE cols: pol={col_pol}, vi={col_vi}, vf={col_vf}, setor={col_set}, sub={col_sub}")
+            df[col_pol] = df[col_pol].apply(_normalizar_apolice)
             for _, row in df.iterrows():
-                chave = row['poliza']
+                chave = row[col_pol]
                 if not chave:
                     continue
-                vi = row.get('Vigencia Inicio', '')
-                vf = row.get('Vigencia Fim', '')
+                vi = row.get(col_vi, '')
+                vf = row.get(col_vf, '')
                 lookup_cnae[chave] = {
                     'Vigencia Inicio': vi.strftime('%d/%m/%Y') if hasattr(vi, 'strftime') else str(vi or ''),
                     'Vigencia Fim':    vf.strftime('%d/%m/%Y') if hasattr(vf, 'strftime') else str(vf or ''),
-                    'SETOR':    _tc(row.get('SETOR',    '')),
-                    'SUBSETOR': _tc(row.get('SUBSETOR', '')),
+                    'SETOR':    _tc(row.get(col_set, '')),
+                    'SUBSETOR': _tc(row.get(col_sub, '')),
                 }
             print(f"SEGURADOS_CNAE: {len(lookup_cnae)} apólices carregadas.")
         except Exception as e:
@@ -338,10 +405,12 @@ def carregar_tabelas_auxiliares():
     if os.path.exists(path_grupo):
         try:
             df = pd.read_excel(path_grupo)
-            col_id    = df.columns[2]   # Identificador Participante
-            col_grupo = df.columns[4]   # Grupo Econômico
+            # Resolução por nome de coluna — robusto contra inserção/renomeação de colunas
+            col_id    = _find_col(df, 'identificador participante', 'identificador') or df.columns[2]
+            col_grupo = _find_col(df, 'grupo econ', 'grupo economico', 'grupo econômico') or df.columns[4]
+            print(f"  > Coluna ID: '{col_id}' | Coluna Grupo: '{col_grupo}'")
             for _, row in df.iterrows():
-                digits = re.sub(r'\D', '', str(row[col_id] or ''))
+                digits = _normalizar_cnpj(row[col_id])
                 grupo  = _tc(row[col_grupo])
                 if digits and grupo and digits not in lookup_grupo:
                     lookup_grupo[digits] = grupo
@@ -356,27 +425,39 @@ def carregar_tabelas_auxiliares():
 
 def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
     """Adiciona colunas de CNAE e Grupo Econômico a cada registro. Aplica Title Case."""
+    sem_cnae  = []
+    sem_grupo = []
+
     for r in registros:
         # Title Case nos campos de texto livre vindos do email
         for campo in ('Segurado', 'Filial', 'Devedor', 'Ocorrência'):
             if r.get(campo):
                 r[campo] = _tc(r[campo])
 
-        # SEGURADOS_CNAE: normaliza apólice (remove espaços, strip .0)
-        apolice_raw = re.sub(r'\s+', '', str(r.get('Apólice', '')))
-        try:
-            apolice = str(int(float(apolice_raw))) if apolice_raw else ''
-        except (ValueError, TypeError):
-            apolice = apolice_raw
+        # SEGURADOS_CNAE: apólice normalizada para dígitos puros
+        apolice   = _normalizar_apolice(r.get('Apólice', ''))
         cnae_info = lookup_cnae.get(apolice, {})
         r['Vigencia Inicio'] = cnae_info.get('Vigencia Inicio', '')
         r['Vigencia Fim']    = cnae_info.get('Vigencia Fim', '')
         r['SETOR']           = cnae_info.get('SETOR', '')
         r['SUBSETOR']        = cnae_info.get('SUBSETOR', '')
+        if not cnae_info:
+            sem_cnae.append(apolice or r.get('Apólice', '?'))
 
-        # GRUPO ECONÔMICO: normaliza CNPJ (só dígitos)
-        cnpj_digits          = re.sub(r'\D', '', str(r.get('CNPJ do Devedor', '')))
+        # GRUPO ECONÔMICO: CNPJ normalizado para dígitos com zero-padding
+        cnpj_digits          = _normalizar_cnpj(r.get('CNPJ do Devedor', ''))
         r['Grupo Econômico'] = lookup_grupo.get(cnpj_digits, '')
+        if not r['Grupo Econômico']:
+            sem_grupo.append(cnpj_digits or r.get('CNPJ do Devedor', '?'))
+
+    total = len(registros)
+    com_cnae  = total - len(sem_cnae)
+    com_grupo = total - len(sem_grupo)
+    print(f"Enriquecimento: {com_cnae}/{total} com CNAE  |  {com_grupo}/{total} com Grupo Econômico")
+    if sem_cnae:
+        print(f"  [!] Apolices sem match na tabela: {sorted(set(sem_cnae))}")
+    if sem_grupo:
+        print(f"  [!] CNPJs sem match na tabela: {sorted(set(sem_grupo))[:10]}")  # max 10
 
     return registros
 
@@ -633,9 +714,9 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
         f'<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">{corpo_texto}</p>'
         f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:{"12px" if cards_l2 else "28px"};"><tr>{cards_l1}</tr></table>'
         + (f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>{cards_l2}</tr></table>' if cards_l2 else '')
-        '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;'
+        + '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;'
         'padding:14px 18px;margin-bottom:28px;">'
-        f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
+        + f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
         + (
             f'<span style="font-size:13px;color:#444;">'
             f'Planilha com <strong>{total_ano}</strong> casos em 2026 · '
@@ -645,7 +726,7 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
             f'<span style="font-size:13px;color:#444;">Planilha com {qtd} casos · '
             f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
         )
-        '</div>'
+        + '</div>'
         '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
         '<p style="font-size:13px;color:#666;line-height:1.7;margin:0;">'
         'Este relatório é gerado automaticamente todo dia às 09h (BRT).<br>'
