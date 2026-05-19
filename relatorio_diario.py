@@ -813,15 +813,24 @@ def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
 #  Google Sheets — Base
 # ─────────────────────────────────────────────
 
+# Colunas enriquecidas/calculadas → cabeçalho verde no Sheets (espelha o Excel)
+_COLS_SHEETS_VERDE = {
+    'Data_ISO', 'Mes_Ano',
+    'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
+    'Vigencia Inicio', 'Vigencia Fim',
+    'SETOR', 'SUBSETOR', 'Grupo Econômico',
+    'Origem',
+}
+
+
 def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dict = None):
     """
-    Reconstrói a aba 'Base' do zero a cada execução:
-    1. Lê casos manuais da segunda aba (enriquece via tabelas auxiliares)
-    2. Mescla com registros de email; dedup por N° Sinistro (email > manual)
-    3. Ordena por data (mais antiga → mais recente)
-    4. Reescreve Base inteira (garante ordenação e consistência)
-    5. Destaca em laranja as linhas de origem manual
-    6. Formata coluna Valor BRL como moeda R$
+    Reconstrói a aba 'Base' do zero a cada execução com layout igual ao Excel:
+      Linha 1 : título mesclado (azul escuro, branco) — idêntico ao Excel
+      Linha 2 : cabeçalhos de coluna (azul / verde por categoria)
+      Linha 3+: dados, ordenados por data (mais antiga → mais recente)
+    Casos manuais da 2ª aba ficam em laranja.
+    Toda a formatação é aplicada em um único batchUpdate.
     """
     if not GSHEET_CREDS or not GSHEET_ID:
         print("Sheets: credenciais nao configuradas — pulando.")
@@ -860,11 +869,10 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         # ── Ordena por Data_ISO (mais antiga → mais recente) ──
         todos.sort(key=lambda r: r.get('Data_ISO', '') or 'zzzz')
 
-        # ── Reconstrói Base do zero ───────────────────────────
-        aba.clear()
-
+        # ── Monta linhas de dados ─────────────────────────────
+        # Linha 1 = título | Linha 2 = cabeçalhos | Linha 3+ = dados
         rows_data      = []
-        linhas_manuais = []   # índices de linha no Sheets (1-based, incluindo header)
+        linhas_manuais = []
 
         for seq_id, r in enumerate(todos, start=1):
             row = [seq_id]
@@ -879,48 +887,125 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
                     row.append(str(val))
             rows_data.append(row)
             if r.get('Origem') == 'Manual':
-                linhas_manuais.append(seq_id + 1)   # +1 porque linha 1 = cabeçalho
+                linhas_manuais.append(seq_id + 2)  # +2: linha 1=título, linha 2=cabeçalho
 
-        aba.update('A1', [COLUNAS_SHEETS] + rows_data, value_input_option='USER_ENTERED')
+        # ── Reconstrói Base (limpa e reescreve tudo de uma vez) ──
+        aba.clear()
+        titulo    = f'Relatório de Sinistros — AVLA Crédito {date.today().year}'
+        linha_tit = [titulo] + [''] * (len(COLUNAS_SHEETS) - 1)
+        aba.update('A1', [linha_tit, COLUNAS_SHEETS] + rows_data,
+                   value_input_option='USER_ENTERED')
+
         n_email  = len(todos) - len(extras)
         n_manual = len(extras)
         print(f"Sheets: Base reconstruida — {len(todos)} registros "
               f"({n_email} email + {n_manual} manuais), ordenados por data.")
 
-        # ── Formato moeda R$ na coluna Valor BRL ─────────────
-        try:
-            col_brl = COLUNAS_SHEETS.index('Valor BRL') + 1
-            letra   = _col_letter(col_brl)
-            aba.format(f'{letra}2:{letra}50000', {
-                'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
-            })
-        except Exception as e:
-            print(f"  [!] Erro ao formatar Valor BRL: {e}")
+        # ── Formatação em batch (1 chamada à API) ─────────────
+        nc  = len(COLUNAS_SHEETS)
+        sid = aba.id
 
-        # ── Destaque laranja nos casos manuais ────────────────
-        if linhas_manuais:
-            nc = len(COLUNAS_SHEETS)
-            sh.batch_update({'requests': [
-                {
-                    'repeatCell': {
-                        'range': {
-                            'sheetId':          aba.id,
-                            'startRowIndex':    ln - 1,   # 0-based
-                            'endRowIndex':      ln,
-                            'startColumnIndex': 0,
-                            'endColumnIndex':   nc,
-                        },
-                        'cell': {
-                            'userEnteredFormat': {
-                                'backgroundColor': {'red': 1.0, 'green': 0.6, 'blue': 0.0}
-                            }
-                        },
-                        'fields': 'userEnteredFormat.backgroundColor'
-                    }
+        def _rgb(r, g, b):
+            return {'red': round(r/255, 4), 'green': round(g/255, 4), 'blue': round(b/255, 4)}
+
+        C_AZUL    = _rgb(0,   48,  135)   # #003087
+        C_VERDE   = _rgb(29,  111,  66)   # #1D6F42
+        C_BRANCO  = _rgb(255, 255, 255)
+        C_LARANJA = _rgb(255, 153,   0)   # laranja
+
+        def _rng(r0, r1, c0=0, c1=None):
+            return {'sheetId': sid, 'startRowIndex': r0, 'endRowIndex': r1,
+                    'startColumnIndex': c0, 'endColumnIndex': c1 or nc}
+
+        requests = []
+
+        # 1. Desfaz mesclagem anterior e aplica nova mescla no título
+        requests += [
+            {'unmergeCells': {'range': _rng(0, 1)}},
+            {'mergeCells':   {'range': _rng(0, 1), 'mergeType': 'MERGE_ALL'}},
+        ]
+
+        # 2. Formata linha 1 — título
+        requests.append({
+            'repeatCell': {
+                'range': _rng(0, 1),
+                'cell': {'userEnteredFormat': {
+                    'backgroundColor':    C_AZUL,
+                    'horizontalAlignment': 'CENTER',
+                    'verticalAlignment':   'MIDDLE',
+                    'textFormat': {'foregroundColor': C_BRANCO,
+                                   'bold': True, 'fontSize': 13,
+                                   'fontFamily': 'Arial'},
+                }},
+                'fields': ('userEnteredFormat(backgroundColor,horizontalAlignment,'
+                           'verticalAlignment,textFormat)'),
+            }
+        })
+
+        # 3. Formata linha 2 — cabeçalhos (azul ou verde por coluna)
+        for ci, col in enumerate(COLUNAS_SHEETS):
+            bg = C_VERDE if col in _COLS_SHEETS_VERDE else C_AZUL
+            requests.append({
+                'repeatCell': {
+                    'range': _rng(1, 2, ci, ci + 1),
+                    'cell': {'userEnteredFormat': {
+                        'backgroundColor':    bg,
+                        'horizontalAlignment': 'CENTER',
+                        'verticalAlignment':   'MIDDLE',
+                        'wrapStrategy':        'WRAP',
+                        'textFormat': {'foregroundColor': C_BRANCO,
+                                       'bold': True, 'fontSize': 10,
+                                       'fontFamily': 'Arial'},
+                    }},
+                    'fields': ('userEnteredFormat(backgroundColor,horizontalAlignment,'
+                               'verticalAlignment,wrapStrategy,textFormat)'),
                 }
-                for ln in linhas_manuais
-            ]})
-            print(f"  > {len(linhas_manuais)} linhas manuais destacadas em laranja.")
+            })
+
+        # 4. Congela as 2 primeiras linhas (título + cabeçalho)
+        requests.append({
+            'updateSheetProperties': {
+                'properties': {'sheetId': sid,
+                               'gridProperties': {'frozenRowCount': 2}},
+                'fields': 'gridProperties.frozenRowCount',
+            }
+        })
+
+        # 5. Altura das linhas 1 e 2
+        requests.append({
+            'updateDimensionProperties': {
+                'range':      {'sheetId': sid, 'dimension': 'ROWS',
+                               'startIndex': 0, 'endIndex': 2},
+                'properties': {'pixelSize': 28},
+                'fields':     'pixelSize',
+            }
+        })
+
+        # 6. Formato moeda R$ na coluna Valor BRL (dados: a partir da linha 3 → índice 2)
+        col_brl = COLUNAS_SHEETS.index('Valor BRL')
+        requests.append({
+            'repeatCell': {
+                'range': _rng(2, 50000, col_brl, col_brl + 1),
+                'cell': {'userEnteredFormat': {
+                    'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
+                }},
+                'fields': 'userEnteredFormat.numberFormat',
+            }
+        })
+
+        # 7. Laranja nos casos manuais
+        for ln in linhas_manuais:
+            requests.append({
+                'repeatCell': {
+                    'range': _rng(ln - 1, ln),
+                    'cell': {'userEnteredFormat': {'backgroundColor': C_LARANJA}},
+                    'fields': 'userEnteredFormat.backgroundColor',
+                }
+            })
+
+        sh.batch_update({'requests': requests})
+        print(f"  > Formatação aplicada: título, cabeçalhos, "
+              f"{len(linhas_manuais)} linha(s) laranja.")
 
     except Exception as e:
         print(f"Erro ao escrever no Sheets (nao fatal): {e}")
