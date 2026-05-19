@@ -672,6 +672,7 @@ def _mapear_header_manual(header: list) -> dict:
         'Declaração':       ['declaração', 'declaracao', 'fecha declaracion'],
         'Valor Sinistrado': ['valor sinistrado', 'valor', 'monto', 'monto sinistrado',
                              'valor do sinistro'],
+        'Moeda':            ['moeda', 'currency', 'moneda', 'moeda original', 'tipo moeda'],
         'Observações':      ['observações', 'observacao', 'observacoes', 'obs',
                              'notas', 'nota', 'descricao', 'descrição',
                              'dicionario', 'dicionário', 'comentario', 'comentários'],
@@ -763,8 +764,10 @@ def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
             r.setdefault('Mes_Ano',  d.strftime('%Y-%m')    if d.year >= 2020 else '')
 
             if not r.get('Valor BRL'):
-                moeda, v_orig = _detect_moeda(r.get('Valor Sinistrado', ''))
-                r.setdefault('Moeda',          moeda)
+                moeda_manual = r.get('Moeda', '').strip().upper()   # da aba manual, se mapeado
+                moeda_detect, v_orig = _detect_moeda(r.get('Valor Sinistrado', ''))
+                moeda = moeda_manual if moeda_manual in ('BRL', 'USD', 'EUR') else moeda_detect
+                r['Moeda'] = moeda
                 r.setdefault('Valor Original', round(v_orig, 2))
                 if d.year >= 2020 and v_orig:
                     if moeda == 'BRL':
@@ -849,8 +852,13 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         extras     = [m for m in manuais if str(m.get('N° Sinistro', '')) not in num_emails]
         todos      = list(registros) + extras
 
-        # ── Ordena por Data_ISO (mais antiga → mais recente) ──
-        todos.sort(key=lambda r: r.get('Data_ISO', '') or 'zzzz')
+        # ── Ordena por Declaração (mais antiga → mais recente) ──
+        def _key_decl(r):
+            try:
+                return datetime.strptime(r.get('Declaração', '') or '', '%d/%m/%Y').date()
+            except (ValueError, TypeError):
+                return date(2000, 1, 1)
+        todos.sort(key=_key_decl)
 
         # ── Detecta modo de destaque (D-1 ou fallback 7 dias) ──
         ontem_iso = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -869,7 +877,13 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
             row = [seq_id]
             for c in COLUNAS_SHEETS[1:]:
                 val = r.get(c, '') or ''
-                if c in _COLUNAS_NUMERICAS:
+                if c == 'Valor Sinistrado':
+                    # Grava como número (= Valor Original) para aplicar formato moeda no Sheets
+                    try:
+                        row.append(float(r.get('Valor Original', 0.0) or 0.0))
+                    except (ValueError, TypeError):
+                        row.append(0.0)
+                elif c in _COLUNAS_NUMERICAS:
                     try:
                         row.append(float(val))
                     except (ValueError, TypeError):
@@ -979,12 +993,13 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
             'fields': 'userEnteredFormat.numberFormat',
         }})
 
-        # 6b. Formato NUMBER explícito para Valor Original, FX PTAX, Valor USD
+        # 6b. Formato NUMBER explícito para Valor Sinistrado, Valor Original, FX PTAX, Valor USD
         #     aba.clear() não limpa formatação — se uma execução anterior gravou
         #     formato de data nestas colunas, os valores float renderizariam como datas.
-        for _cn, _fmt in [('Valor Original', '#,##0.00'),
-                           ('FX PTAX',        '#,##0.0000'),
-                           ('Valor USD',      '#,##0.00')]:
+        for _cn, _fmt in [('Valor Sinistrado', '#,##0.00'),
+                           ('Valor Original',  '#,##0.00'),
+                           ('FX PTAX',         '#,##0.0000'),
+                           ('Valor USD',       '#,##0.00')]:
             _ci = COLUNAS_SHEETS.index(_cn)
             requests.append({'repeatCell': {
                 'range': _rng(2, 50000, _ci, _ci + 1),
