@@ -1,0 +1,31 @@
+name: "[TESTE] Relatório Diário de Sinistros — lsilva"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  coletar-e-enviar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar relatório diário — envio apenas para lsilva
+        env:
+          EMAIL_CAIXA:          ${{ secrets.EMAIL_CAIXA }}
+          APP_PASSWORD:         ${{ secrets.APP_PASSWORD }}
+          ASSUNTO_FILTRO:       ${{ secrets.ASSUNTO_FILTRO }}
+          REMETENTE_FILTRO:     ${{ secrets.REMETENTE_FILTRO }}
+          GSHEET_CREDENTIALS:   ${{ secrets.GSHEET_CREDENTIALS }}
+          GSHEET_ID:            ${{ secrets.GSHEET_ID }}
+          EMAIL_DESTINO:        lsilva@avla.com
+        run: python relatorio_diario.py
