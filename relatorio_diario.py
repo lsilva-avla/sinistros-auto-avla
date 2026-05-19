@@ -445,8 +445,8 @@ def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
     sem_cnae = []
 
     for r in registros:
-        # Title Case nos campos de texto livre vindos do email
-        for campo in ('Segurado', 'Filial', 'Devedor', 'Ocorrência'):
+        # Title Case em todos os campos de texto livre vindos do email
+        for campo in ('Segurado', 'Filial', 'Devedor', 'Ocorrência', 'Declaração'):
             if r.get(campo):
                 r[campo] = _tc(r[campo])
 
@@ -805,6 +805,12 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
     ontem_str = ontem.strftime('%d/%m/%Y')
     corte_7d  = date.today() - timedelta(days=7)
 
+    # Campos de texto → Title Case no Excel (defesa além do enriquecer)
+    cols_texto = {
+        'Segurado', 'Filial', 'Devedor', 'Ocorrência', 'Declaração',
+        'SETOR', 'SUBSETOR', 'Grupo Econômico',
+    }
+
     # Linha 3+ — dados ────────────────────────────────────────
     for seq_id, (_, row) in enumerate(df.iterrows(), start=1):
         xl_row = seq_id + 2   # linha Excel = seq_id + 2 (linhas 1 e 2 são cabeçalhos)
@@ -830,6 +836,8 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
                         val = 0.0
                 else:
                     val = '' if (raw is None or str(raw).lower() in ('nan', 'none', '')) else str(raw)
+                    if val and col_name in cols_texto:
+                        val = _tc(val)
 
             cell = ws.cell(row=xl_row, column=ci, value=val)
             cell.font      = font_body
