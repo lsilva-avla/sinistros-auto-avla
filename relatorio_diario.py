@@ -292,6 +292,14 @@ def coletar_emails(inicio: datetime, fim: datetime) -> list:
 #  Tabelas auxiliares
 # ─────────────────────────────────────────────
 
+def _tc(s) -> str:
+    """Title Case seguro: primeira letra maiúscula em cada palavra. Vazio retorna ''."""
+    v = str(s).strip() if s is not None else ''
+    if not v or v.lower() in ('nan', 'none', ''):
+        return ''
+    return v.title()
+
+
 def carregar_tabelas_auxiliares():
     """Carrega lookups de SEGURADOS_CNAE e GRUPO_ECONOMICO."""
     path_cnae  = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
@@ -304,15 +312,21 @@ def carregar_tabelas_auxiliares():
     if os.path.exists(path_cnae):
         try:
             df = pd.read_excel(path_cnae)
-            df['poliza'] = df['poliza'].astype(str).str.strip()
+            # poliza é int64 no Excel → str sem .0
+            df['poliza'] = df['poliza'].apply(
+                lambda v: str(int(float(str(v).strip()))) if str(v).strip() not in ('', 'nan') else ''
+            )
             for _, row in df.iterrows():
+                chave = row['poliza']
+                if not chave:
+                    continue
                 vi = row.get('Vigencia Inicio', '')
                 vf = row.get('Vigencia Fim', '')
-                lookup_cnae[row['poliza']] = {
+                lookup_cnae[chave] = {
                     'Vigencia Inicio': vi.strftime('%d/%m/%Y') if hasattr(vi, 'strftime') else str(vi or ''),
                     'Vigencia Fim':    vf.strftime('%d/%m/%Y') if hasattr(vf, 'strftime') else str(vf or ''),
-                    'SETOR':           str(row.get('SETOR', '')    or ''),
-                    'SUBSETOR':        str(row.get('SUBSETOR', '') or ''),
+                    'SETOR':    _tc(row.get('SETOR',    '')),
+                    'SUBSETOR': _tc(row.get('SUBSETOR', '')),
                 }
             print(f"SEGURADOS_CNAE: {len(lookup_cnae)} apólices carregadas.")
         except Exception as e:
@@ -324,12 +338,11 @@ def carregar_tabelas_auxiliares():
     if os.path.exists(path_grupo):
         try:
             df = pd.read_excel(path_grupo)
-            # Coluna 'Identificador Participante' (índice 2) e 'Grupo Econômico' (índice 4)
             col_id    = df.columns[2]   # Identificador Participante
             col_grupo = df.columns[4]   # Grupo Econômico
             for _, row in df.iterrows():
                 digits = re.sub(r'\D', '', str(row[col_id] or ''))
-                grupo  = str(row[col_grupo] or '').strip()
+                grupo  = _tc(row[col_grupo])
                 if digits and grupo and digits not in lookup_grupo:
                     lookup_grupo[digits] = grupo
             print(f"GRUPO ECONÔMICO: {len(lookup_grupo)} participantes carregados.")
@@ -342,18 +355,27 @@ def carregar_tabelas_auxiliares():
 
 
 def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
-    """Adiciona colunas de CNAE e Grupo Econômico a cada registro."""
+    """Adiciona colunas de CNAE e Grupo Econômico a cada registro. Aplica Title Case."""
     for r in registros:
-        # — SEGURADOS_CNAE pelo número da apólice —
-        apolice   = str(r.get('Apólice', '')).strip()
+        # Title Case nos campos de texto livre vindos do email
+        for campo in ('Segurado', 'Filial', 'Devedor', 'Ocorrência'):
+            if r.get(campo):
+                r[campo] = _tc(r[campo])
+
+        # SEGURADOS_CNAE: normaliza apólice (remove espaços, strip .0)
+        apolice_raw = re.sub(r'\s+', '', str(r.get('Apólice', '')))
+        try:
+            apolice = str(int(float(apolice_raw))) if apolice_raw else ''
+        except (ValueError, TypeError):
+            apolice = apolice_raw
         cnae_info = lookup_cnae.get(apolice, {})
         r['Vigencia Inicio'] = cnae_info.get('Vigencia Inicio', '')
         r['Vigencia Fim']    = cnae_info.get('Vigencia Fim', '')
         r['SETOR']           = cnae_info.get('SETOR', '')
         r['SUBSETOR']        = cnae_info.get('SUBSETOR', '')
 
-        # — GRUPO ECONÔMICO pelo CNPJ (só dígitos) —
-        cnpj_digits         = re.sub(r'\D', '', str(r.get('CNPJ do Devedor', '')))
+        # GRUPO ECONÔMICO: normaliza CNPJ (só dígitos)
+        cnpj_digits          = re.sub(r'\D', '', str(r.get('CNPJ do Devedor', '')))
         r['Grupo Econômico'] = lookup_grupo.get(cnpj_digits, '')
 
     return registros
