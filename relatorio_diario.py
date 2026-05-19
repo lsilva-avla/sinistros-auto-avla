@@ -718,30 +718,11 @@ def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
         mapping = _mapear_header_manual(header)
         print(f"  > Colunas mapeadas: {list(mapping.values())}")
 
-        # Detecta coluna de marcação X (coluna fora do mapping com apenas X/Sim/Ok/vazio)
-        mapped_idx = set(mapping.keys())
-        col_x = None
-        for ci, col in enumerate(header):
-            if ci in mapped_idx or not col.strip():
-                continue
-            vals_nv = [rows[ri][ci].strip().upper()
-                       for ri in range(1, len(rows))
-                       if len(rows[ri]) > ci and rows[ri][ci].strip()]
-            if vals_nv and all(v in ('X', 'SIM', 'S', '1', 'OK', 'V', 'YES') for v in vals_nv):
-                col_x = ci
-                print(f"  > Coluna de marcacao X: '{col}' (col {ci})")
-                break
-
+        # Importa TODAS as linhas não-vazias — toda a 2ª aba é manual
         registros = []
         for row in rows[1:]:
             if not any(c.strip() for c in row):
-                continue
-
-            # Filtra por marcação X se detectada
-            if col_x is not None:
-                marca = row[col_x].strip().upper() if len(row) > col_x else ''
-                if marca not in ('X', 'SIM', 'S', '1', 'OK', 'V', 'YES'):
-                    continue
+                continue   # pula linha completamente vazia
 
             r = {}
             for ci, campo in mapping.items():
@@ -749,7 +730,7 @@ def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
                 if val and val.lower() not in ('nan', 'none'):
                     r[campo] = val
 
-            # Só importa se tiver pelo menos N° Sinistro ou Devedor preenchido
+            # Precisa ter pelo menos N° Sinistro ou Devedor
             if not r.get('N° Sinistro') and not r.get('Devedor'):
                 continue
 
