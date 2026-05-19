@@ -522,6 +522,14 @@ def _parse_date(s: str) -> date:
         return date(2000, 1, 1)
 
 
+def _key_decl(r: dict) -> date:
+    """Chave de ordenação por data de Declaração (mais antiga → mais recente)."""
+    try:
+        return datetime.strptime(r.get('Declaração', '') or '', '%d/%m/%Y').date()
+    except (ValueError, TypeError):
+        return date(2000, 1, 1)
+
+
 # ─────────────────────────────────────────────
 #  Cotação FX — BCB PTAX (gratuita, sem chave)
 # ─────────────────────────────────────────────
@@ -813,14 +821,15 @@ _COLS_SHEETS_VERDE = {
 }
 
 
-def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dict = None):
+def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dict = None) -> list:
     """
     Reconstrói a aba 'Base' do zero a cada execução com layout igual ao Excel:
       Linha 1 : título mesclado (azul escuro, branco) — idêntico ao Excel
       Linha 2 : cabeçalhos de coluna (azul / verde por categoria)
       Linha 3+: dados, ordenados por data (mais antiga → mais recente)
-    Casos manuais da 2ª aba ficam em laranja.
+    Casos manuais da 2ª aba ficam com ID e Origem em laranja.
     Toda a formatação é aplicada em um único batchUpdate.
+    Retorna a lista combinada (email + manuais) para reuso em gerar_excel.
     """
     if not GSHEET_CREDS or not GSHEET_ID:
         print("Sheets: credenciais nao configuradas — pulando.")
@@ -857,11 +866,6 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         todos      = list(registros) + extras
 
         # ── Ordena por Declaração (mais antiga → mais recente) ──
-        def _key_decl(r):
-            try:
-                return datetime.strptime(r.get('Declaração', '') or '', '%d/%m/%Y').date()
-            except (ValueError, TypeError):
-                return date(2000, 1, 1)
         todos.sort(key=_key_decl)
 
         # ── Detecta modo de destaque (D-1 ou fallback 7 dias) ──
@@ -1046,9 +1050,11 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         modo = 'ontem' if tem_ontem else f'últimos 7 dias'
         print(f"  > Formatação: cabeçalhos, {len(linhas_destaque)} linha(s) azul "
               f"({modo}), {len(linhas_manuais)} laranja.")
+        return todos
 
     except Exception as e:
         print(f"Erro ao escrever no Sheets (nao fatal): {e}")
+        return list(registros)   # fallback: apenas emails
 
 
 # ─────────────────────────────────────────────
@@ -1057,12 +1063,16 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
 
 def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO:
     """
-    Gera Excel com TODOS os registros do ano (26 colunas, A–Z).
+    Gera Excel com TODOS os registros do ano (email + manuais, 26 colunas A–Z).
     - Linha 1 : título mesclado A1:Z1 — azul escuro, texto branco
-    - Linha 2 : cabeçalhos de coluna — azul (dados) / verde (enriquecidos), texto branco
-    - Linha 3+: dados; destaca ontem (normal) ou últimos 7 dias (fallback)
+    - Linha 2 : cabeçalhos — azul (dados) / verde (enriquecidos), texto branco
+    - Linha 3+: dados ordenados por Declaração; destaca ontem ou últimos 7 dias;
+                ID e Origem em laranja para casos manuais
     """
-    colunas = list(COLUNAS_SHEETS)   # 23 colunas (A–W)
+    colunas = list(COLUNAS_SHEETS)
+
+    # ── Ordena por Declaração antes de montar o DataFrame ────
+    registros = sorted(registros, key=_key_decl)
 
     # ── Monta DataFrame ──────────────────────────────────────
     df = pd.DataFrame(registros)
@@ -1080,6 +1090,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
     fill_azul   = PatternFill(fill_type='solid', fgColor=AZUL)
     fill_verde  = PatternFill(fill_type='solid', fgColor=VERDE)
     fill_dest   = PatternFill(fill_type='solid', fgColor=DEST)
+    fill_manual = PatternFill(fill_type='solid', fgColor='FF9900')   # laranja manuais
     font_titulo = Font(bold=True, color=BRANCO, size=13, name='Arial')
     font_header = Font(bold=True, color=BRANCO, size=10, name='Arial')
     font_body   = Font(name='Arial', size=10)
@@ -1087,26 +1098,21 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
     al_wrap     = Alignment(horizontal='center', vertical='center', wrap_text=True)
     al_body     = Alignment(vertical='center')
 
-    # Colunas enriquecidas/calculadas → cabeçalho verde
-    cols_verde = {
-        'Data_ISO', 'Mes_Ano',
-        'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
-        'Vigencia Inicio', 'Vigencia Fim',
-        'SETOR', 'SUBSETOR', 'Grupo Econômico',
-        'Origem',   # derivado do processamento
-    }
+    # Colunas enriquecidas → cabeçalho verde (reutiliza constante do módulo)
+    cols_verde = _COLS_SHEETS_VERDE
     # Colunas numéricas → gravar como float + formato numérico
     fmt_map = {
-        'Valor Original': '#,##0.00',
-        'Valor BRL':      '#,##0.00',
-        'FX PTAX':        '#,##0.0000',
-        'Valor USD':      '#,##0.00',
+        'Valor Sinistrado': '#,##0.00',   # numérico = Valor Original (consistente com Sheets)
+        'Valor Original':   '#,##0.00',
+        'Valor BRL':        '#,##0.00',
+        'FX PTAX':          '#,##0.0000',
+        'Valor USD':        '#,##0.00',
     }
 
     # ── Workbook ─────────────────────────────────────────────
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = 'Sinistros 2026'
+    ws.title = f'Sinistros {ontem.year}'
 
     num_cols   = len(colunas)
     ultima_col = _col_letter(num_cols)   # 23 → 'W'
@@ -1150,13 +1156,24 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
             destacar = False
 
         fill_linha = fill_dest if destacar else None
+        is_manual  = str(row.get('Origem', '')).strip() == 'Manual'
+
+        # Índices 1-based das colunas ID e Origem para destaque laranja
+        ci_id_col     = colunas.index('ID') + 1
+        ci_origem_col = colunas.index('Origem') + 1
 
         for ci, col_name in enumerate(colunas, start=1):
             if col_name == 'ID':
                 val = seq_id
             else:
                 raw = row.get(col_name, '')
-                if col_name in fmt_map:
+                if col_name == 'Valor Sinistrado':
+                    # Numérico = Valor Original (consistente com Sheets)
+                    try:
+                        val = float(row.get('Valor Original', 0.0) or 0.0)
+                    except (ValueError, TypeError):
+                        val = 0.0
+                elif col_name in fmt_map:
                     try:
                         val = float(raw) if raw not in ('', None) else 0.0
                     except (ValueError, TypeError):
@@ -1171,8 +1188,12 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
             cell.alignment = al_body
             if col_name in fmt_map:
                 cell.number_format = fmt_map[col_name]
-            if fill_linha:
+            # Destaque de linha recente (não sobrescreve laranja manual)
+            if fill_linha and not is_manual:
                 cell.fill = fill_linha
+            # Laranja apenas em ID e Origem para casos manuais
+            if is_manual and ci in (ci_id_col, ci_origem_col):
+                cell.fill = fill_manual
 
     # Auto-width ──────────────────────────────────────────────
     sample = df.head(50)
@@ -1415,27 +1436,24 @@ def main():
     lookup_cnae, lookup_grupo = carregar_tabelas_auxiliares()
     registros_ano = enriquecer(registros_ano, lookup_cnae, lookup_grupo)
 
-    # Escreve na base online — também lê e mescla casos manuais da 2ª aba
-    escrever_sheets(registros_ano, lookup_cnae, lookup_grupo)
+    # Escreve na base online — lê e mescla casos manuais; retorna email + manuais combinados
+    todos_registros = escrever_sheets(registros_ano, lookup_cnae, lookup_grupo)
 
-    # Re-filtra registros para exibição nos cards (após enriquecimento)
-    # Nota: cards/email usam apenas os casos de email (não os manuais)
+    # Filtra para cards do email (apenas casos de email, período de display)
+    registros_email = [r for r in todos_registros if r.get('Origem') != 'Manual']
     if not fallback:
-        registros_display = [r for r in registros_ano if r.get('Data') == ontem_str]
+        registros_display = [r for r in registros_email if r.get('Data') == ontem_str]
     else:
         corte_7d = date.today() - timedelta(days=7)
-        registros_display = [r for r in registros_ano
+        registros_display = [r for r in registros_email
                              if _parse_date(r.get('Data', '')) >= corte_7d]
 
-    # Excel com TODOS os registros (email + manuais), ordenados por data
-    # Para isso, lemos os manuais de novo (já enriquecidos, sem conexão Sheets)
-    # Usamos o registros_ano já enriquecido; manuais serão incluídos pelo Sheets mas
-    # o Excel só tem email para não duplicar (já que Sheets tem a visão completa)
-    excel = gerar_excel(registros_ano, ontem, fallback=fallback)
+    # Excel com TODOS os registros (email + manuais), ordenados por Declaração
+    excel = gerar_excel(todos_registros, ontem, fallback=fallback)
 
-    # Email: cards do período de display; descrição do Excel mostra total do ano
+    # Email: cards do período; Excel mostra total incluindo manuais
     enviar_relatorio(excel, len(registros_display), registros_display, ontem,
-                     fallback=fallback, total_ano=len(registros_ano))
+                     fallback=fallback, total_ano=len(todos_registros))
 
     print("Concluído com sucesso.")
 
