@@ -583,18 +583,10 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
             card('#7DC242', 'Maior Caso', formatar_brl(maior_v), maior_nome)
         )
 
-    # Cards — linha 2
-    if fallback:
-        cards_l2 = (
-            card('#7DC242', 'Maior Caso', formatar_brl(maior_v), maior_nome, '33%') +
-            card('#00A3D9', 'Com Grupo Econ.', com_grupo, 'devedores identificados', '33%') +
-            card('#1D6F42', 'Com Setor CNAE', com_setor, 'apólices identificadas', '33%')
-        )
-    else:
-        cards_l2 = (
-            card('#00A3D9', 'Com Grupo Econ.', com_grupo, 'devedores identificados', '50%') +
-            card('#1D6F42', 'Com Setor CNAE', com_setor, 'apólices identificadas', '50%')
-        )
+    # Cards — linha 2 (só no fallback, mostra Maior Caso)
+    cards_l2 = (
+        card('#7DC242', 'Maior Caso', formatar_brl(maior_v), maior_nome, '50%')
+    ) if fallback else ''
 
     return (
         '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"></head>'
@@ -611,8 +603,8 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
         f'<p style="font-size:13px;color:#777;margin:0 0 24px;">Período: {label_periodo}</p>'
         f'{banner_fallback}'
         f'<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">{corpo_texto}</p>'
-        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;"><tr>{cards_l1}</tr></table>'
-        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>{cards_l2}</tr></table>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:{"12px" if cards_l2 else "28px"};"><tr>{cards_l1}</tr></table>'
+        + (f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>{cards_l2}</tr></table>' if cards_l2 else '')
         '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;'
         'padding:14px 18px;margin-bottom:28px;">'
         f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
