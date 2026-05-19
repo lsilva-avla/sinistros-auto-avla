@@ -364,12 +364,10 @@ def _find_col(df, *keywords):
 
 
 def carregar_tabelas_auxiliares():
-    """Carrega lookups de SEGURADOS_CNAE e GRUPO_ECONOMICO."""
-    path_cnae  = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
-    path_grupo = os.path.join(BASE_DIR, 'dados', 'GRUPO_ECONOMICO.xlsx')
+    """Carrega lookup de SEGURADOS_CNAE (apólice → vigência, setor, subsetor)."""
+    path_cnae = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
 
-    lookup_cnae  = {}
-    lookup_grupo = {}
+    lookup_cnae = {}
 
     # — SEGURADOS_CNAE —
     if os.path.exists(path_cnae):
@@ -401,32 +399,12 @@ def carregar_tabelas_auxiliares():
     else:
         print("SEGURADOS_CNAE.xlsx não encontrado — enriquecimento pulado.")
 
-    # — GRUPO ECONÔMICO —
-    if os.path.exists(path_grupo):
-        try:
-            df = pd.read_excel(path_grupo)
-            # Resolução por nome de coluna — robusto contra inserção/renomeação de colunas
-            col_id    = _find_col(df, 'identificador participante', 'identificador') or df.columns[2]
-            col_grupo = _find_col(df, 'grupo econ', 'grupo economico', 'grupo econômico') or df.columns[4]
-            print(f"  > Coluna ID: '{col_id}' | Coluna Grupo: '{col_grupo}'")
-            for _, row in df.iterrows():
-                digits = _normalizar_cnpj(row[col_id])
-                grupo  = _tc(row[col_grupo])
-                if digits and grupo and digits not in lookup_grupo:
-                    lookup_grupo[digits] = grupo
-            print(f"GRUPO ECONÔMICO: {len(lookup_grupo)} participantes carregados.")
-        except Exception as e:
-            print(f"Erro ao carregar GRUPO_ECONOMICO: {e}")
-    else:
-        print("GRUPO_ECONOMICO.xlsx não encontrado — enriquecimento pulado.")
-
-    return lookup_cnae, lookup_grupo
+    return lookup_cnae
 
 
-def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
-    """Adiciona colunas de CNAE e Grupo Econômico a cada registro. Aplica Title Case."""
-    sem_cnae  = []
-    sem_grupo = []
+def enriquecer(registros: list, lookup_cnae: dict) -> list:
+    """Enriquece registros com CNAE e aplica Title Case nos campos de texto."""
+    sem_cnae = []
 
     for r in registros:
         # Title Case nos campos de texto livre vindos do email
@@ -444,20 +422,11 @@ def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
         if not cnae_info:
             sem_cnae.append(apolice or r.get('Apólice', '?'))
 
-        # GRUPO ECONÔMICO: CNPJ normalizado para dígitos com zero-padding
-        cnpj_digits          = _normalizar_cnpj(r.get('CNPJ do Devedor', ''))
-        r['Grupo Econômico'] = lookup_grupo.get(cnpj_digits, '')
-        if not r['Grupo Econômico']:
-            sem_grupo.append(cnpj_digits or r.get('CNPJ do Devedor', '?'))
-
-    total = len(registros)
-    com_cnae  = total - len(sem_cnae)
-    com_grupo = total - len(sem_grupo)
-    print(f"Enriquecimento: {com_cnae}/{total} com CNAE  |  {com_grupo}/{total} com Grupo Econômico")
+    total    = len(registros)
+    com_cnae = total - len(sem_cnae)
+    print(f"Enriquecimento: {com_cnae}/{total} com CNAE")
     if sem_cnae:
         print(f"  [!] Apolices sem match na tabela: {sorted(set(sem_cnae))}")
-    if sem_grupo:
-        print(f"  [!] CNPJs sem match na tabela: {sorted(set(sem_grupo))[:10]}")  # max 10
 
     return registros
 
@@ -478,7 +447,7 @@ COLUNAS_SHEETS = [
     'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
     'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
     'Valor Sinistrado', 'Vigencia Inicio', 'Vigencia Fim',
-    'SETOR', 'SUBSETOR', 'Grupo Econômico',
+    'SETOR', 'SUBSETOR',
 ]
 
 
@@ -546,7 +515,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
         'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
         'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
         'Valor Sinistrado', 'Vigencia Inicio', 'Vigencia Fim',
-        'SETOR', 'SUBSETOR', 'Grupo Econômico',
+        'SETOR', 'SUBSETOR',
     ]
 
     df = pd.DataFrame(registros)
@@ -572,7 +541,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
         ws.row_dimensions[1].height = 20
 
         # Colunas enriquecidas com cabeçalho verde escuro
-        cols_enrich = ['Vigencia Inicio', 'Vigencia Fim', 'SETOR', 'SUBSETOR', 'Grupo Econômico']
+        cols_enrich = ['Vigencia Inicio', 'Vigencia Fim', 'SETOR', 'SUBSETOR']
         enrich_fill = PatternFill(fill_type='solid', fgColor='1D6F42')
         for cell in ws[1]:
             if cell.value in cols_enrich:
@@ -642,9 +611,6 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
     maior_nome = maior_r.get('Devedor', maior_r.get('Segurado', '—'))
     if len(maior_nome) > 22:
         maior_nome = maior_nome[:22] + '…'
-
-    com_grupo = sum(1 for r in registros if r.get('Grupo Econômico', ''))
-    com_setor = sum(1 for r in registros if r.get('SETOR', ''))
 
     def card(cor, label, val, sub, width='33%', destaque_cor=None):
         fs = '22' if width == '33%' and label in ('Total de Casos', 'Ontem') else '18'
@@ -721,10 +687,10 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
             f'<span style="font-size:13px;color:#444;">'
             f'Planilha com <strong>{total_ano}</strong> casos em 2026 · '
             f'destacados: {qtd} {"ontem" if not fallback else "nos últimos 7 dias"} · '
-            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
+            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor e Subsetor</span>'
             if total_ano and total_ano > qtd else
             f'<span style="font-size:13px;color:#444;">Planilha com {qtd} casos · '
-            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
+            f'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor e Subsetor</span>'
         )
         + '</div>'
         '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
@@ -829,8 +795,8 @@ def main():
         print(f"{len(registros_ontem)} sinistro(s) em {ontem_str} — modo normal.")
 
     # Enriquece TODOS os registros do ano
-    lookup_cnae, lookup_grupo = carregar_tabelas_auxiliares()
-    registros_ano = enriquecer(registros_ano, lookup_cnae, lookup_grupo)
+    lookup_cnae = carregar_tabelas_auxiliares()
+    registros_ano = enriquecer(registros_ano, lookup_cnae)
 
     # Escreve tudo na base online (dedup por N° Sinistro)
     escrever_sheets(registros_ano)
