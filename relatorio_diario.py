@@ -850,12 +850,20 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         # ── Ordena por Data_ISO (mais antiga → mais recente) ──
         todos.sort(key=lambda r: r.get('Data_ISO', '') or 'zzzz')
 
+        # ── Detecta modo de destaque (D-1 ou fallback 7 dias) ──
+        ontem_iso = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+        corte_iso = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
+        tem_ontem = any(r.get('Data_ISO', '') == ontem_iso for r in todos
+                        if r.get('Data_ISO'))
+
         # ── Monta linhas de dados ─────────────────────────────
         # Linha 1 = título | Linha 2 = cabeçalhos | Linha 3+ = dados
-        rows_data      = []
-        linhas_manuais = []
+        rows_data       = []
+        linhas_manuais  = []
+        linhas_destaque = []   # azul claro D-1 / 7 dias
 
         for seq_id, r in enumerate(todos, start=1):
+            xl_row = seq_id + 2   # linha no Sheets (1-based): +2 por título + cabeçalho
             row = [seq_id]
             for c in COLUNAS_SHEETS[1:]:
                 val = r.get(c, '') or ''
@@ -867,8 +875,18 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
                 else:
                     row.append(str(val))
             rows_data.append(row)
+
             if r.get('Origem') == 'Manual':
-                linhas_manuais.append(seq_id + 2)  # +2: linha 1=título, linha 2=cabeçalho
+                linhas_manuais.append(xl_row)
+
+            # Destaque azul claro: ontem (normal) ou últimos 7 dias (fallback)
+            data_iso = r.get('Data_ISO', '') or ''
+            if tem_ontem:
+                if data_iso == ontem_iso:
+                    linhas_destaque.append(xl_row)
+            else:
+                if data_iso and data_iso >= corte_iso:
+                    linhas_destaque.append(xl_row)
 
         # ── Reconstrói Base (limpa e reescreve tudo de uma vez) ──
         aba.clear()
@@ -889,14 +907,24 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
         def _rgb(r, g, b):
             return {'red': round(r/255, 4), 'green': round(g/255, 4), 'blue': round(b/255, 4)}
 
-        C_AZUL    = _rgb(0,   48,  135)   # #003087
-        C_VERDE   = _rgb(29,  111,  66)   # #1D6F42
-        C_BRANCO  = _rgb(255, 255, 255)
-        C_LARANJA = _rgb(255, 153,   0)   # laranja
+        C_AZUL       = _rgb(0,   48,  135)   # #003087
+        C_BRANCO     = _rgb(255, 255, 255)
+        C_AZUL_CLARO = _rgb(220, 240, 255)   # #DCF0FF — destaque recente
+        C_LARANJA    = _rgb(255, 153,   0)   # laranja — casos manuais
 
         def _rng(r0, r1, c0=0, c1=None):
             return {'sheetId': sid, 'startRowIndex': r0, 'endRowIndex': r1,
                     'startColumnIndex': c0, 'endColumnIndex': c1 or nc}
+
+        _fmt_header = {   # estilo comum ao título e ao cabeçalho
+            'backgroundColor':     C_AZUL,
+            'horizontalAlignment': 'CENTER',
+            'verticalAlignment':   'MIDDLE',
+            'textFormat': {'foregroundColor': C_BRANCO,
+                           'bold': True, 'fontFamily': 'Arial'},
+        }
+        _fields_header = ('userEnteredFormat(backgroundColor,horizontalAlignment,'
+                          'verticalAlignment,textFormat)')
 
         requests = []
 
@@ -906,87 +934,69 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
             {'mergeCells':   {'range': _rng(0, 1), 'mergeType': 'MERGE_ALL'}},
         ]
 
-        # 2. Formata linha 1 — título
-        requests.append({
-            'repeatCell': {
-                'range': _rng(0, 1),
-                'cell': {'userEnteredFormat': {
-                    'backgroundColor':    C_AZUL,
-                    'horizontalAlignment': 'CENTER',
-                    'verticalAlignment':   'MIDDLE',
-                    'textFormat': {'foregroundColor': C_BRANCO,
-                                   'bold': True, 'fontSize': 13,
-                                   'fontFamily': 'Arial'},
-                }},
-                'fields': ('userEnteredFormat(backgroundColor,horizontalAlignment,'
-                           'verticalAlignment,textFormat)'),
-            }
-        })
+        # 2. Linha 1 — título (fontSize 13)
+        fmt_titulo = {**_fmt_header,
+                      'textFormat': {**_fmt_header['textFormat'], 'fontSize': 13}}
+        requests.append({'repeatCell': {
+            'range': _rng(0, 1),
+            'cell': {'userEnteredFormat': fmt_titulo},
+            'fields': _fields_header,
+        }})
 
-        # 3. Formata linha 2 — cabeçalhos (azul ou verde por coluna)
-        for ci, col in enumerate(COLUNAS_SHEETS):
-            bg = C_VERDE if col in _COLS_SHEETS_VERDE else C_AZUL
-            requests.append({
-                'repeatCell': {
-                    'range': _rng(1, 2, ci, ci + 1),
-                    'cell': {'userEnteredFormat': {
-                        'backgroundColor':    bg,
-                        'horizontalAlignment': 'CENTER',
-                        'verticalAlignment':   'MIDDLE',
-                        'wrapStrategy':        'WRAP',
-                        'textFormat': {'foregroundColor': C_BRANCO,
-                                       'bold': True, 'fontSize': 10,
-                                       'fontFamily': 'Arial'},
-                    }},
-                    'fields': ('userEnteredFormat(backgroundColor,horizontalAlignment,'
-                               'verticalAlignment,wrapStrategy,textFormat)'),
-                }
-            })
+        # 3. Linha 2 — cabeçalhos (mesma formatação azul do título, fontSize 11)
+        fmt_cabec = {**_fmt_header, 'wrapStrategy': 'WRAP',
+                     'textFormat': {**_fmt_header['textFormat'], 'fontSize': 11}}
+        requests.append({'repeatCell': {
+            'range': _rng(1, 2),
+            'cell': {'userEnteredFormat': fmt_cabec},
+            'fields': _fields_header + ',userEnteredFormat.wrapStrategy',
+        }})
 
         # 4. Congela as 2 primeiras linhas (título + cabeçalho)
-        requests.append({
-            'updateSheetProperties': {
-                'properties': {'sheetId': sid,
-                               'gridProperties': {'frozenRowCount': 2}},
-                'fields': 'gridProperties.frozenRowCount',
-            }
-        })
+        requests.append({'updateSheetProperties': {
+            'properties': {'sheetId': sid,
+                           'gridProperties': {'frozenRowCount': 2}},
+            'fields': 'gridProperties.frozenRowCount',
+        }})
 
         # 5. Altura das linhas 1 e 2
-        requests.append({
-            'updateDimensionProperties': {
-                'range':      {'sheetId': sid, 'dimension': 'ROWS',
-                               'startIndex': 0, 'endIndex': 2},
-                'properties': {'pixelSize': 28},
-                'fields':     'pixelSize',
-            }
-        })
+        requests.append({'updateDimensionProperties': {
+            'range':      {'sheetId': sid, 'dimension': 'ROWS',
+                           'startIndex': 0, 'endIndex': 2},
+            'properties': {'pixelSize': 28},
+            'fields':     'pixelSize',
+        }})
 
-        # 6. Formato moeda R$ na coluna Valor BRL (dados: a partir da linha 3 → índice 2)
+        # 6. Formato moeda R$ na coluna Valor BRL (dados a partir da linha 3 → índice 2)
         col_brl = COLUNAS_SHEETS.index('Valor BRL')
-        requests.append({
-            'repeatCell': {
-                'range': _rng(2, 50000, col_brl, col_brl + 1),
-                'cell': {'userEnteredFormat': {
-                    'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
-                }},
-                'fields': 'userEnteredFormat.numberFormat',
-            }
-        })
+        requests.append({'repeatCell': {
+            'range': _rng(2, 50000, col_brl, col_brl + 1),
+            'cell': {'userEnteredFormat': {
+                'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
+            }},
+            'fields': 'userEnteredFormat.numberFormat',
+        }})
 
-        # 7. Laranja nos casos manuais
+        # 7. Azul claro nos dados recentes (D-1 ou últimos 7 dias)
+        for ln in linhas_destaque:
+            requests.append({'repeatCell': {
+                'range': _rng(ln - 1, ln),
+                'cell': {'userEnteredFormat': {'backgroundColor': C_AZUL_CLARO}},
+                'fields': 'userEnteredFormat.backgroundColor',
+            }})
+
+        # 8. Laranja nos casos manuais (sobrescreve azul claro se ambos coincidirem)
         for ln in linhas_manuais:
-            requests.append({
-                'repeatCell': {
-                    'range': _rng(ln - 1, ln),
-                    'cell': {'userEnteredFormat': {'backgroundColor': C_LARANJA}},
-                    'fields': 'userEnteredFormat.backgroundColor',
-                }
-            })
+            requests.append({'repeatCell': {
+                'range': _rng(ln - 1, ln),
+                'cell': {'userEnteredFormat': {'backgroundColor': C_LARANJA}},
+                'fields': 'userEnteredFormat.backgroundColor',
+            }})
 
         sh.batch_update({'requests': requests})
-        print(f"  > Formatação aplicada: título, cabeçalhos, "
-              f"{len(linhas_manuais)} linha(s) laranja.")
+        modo = 'ontem' if tem_ontem else f'últimos 7 dias'
+        print(f"  > Formatação: cabeçalhos, {len(linhas_destaque)} linha(s) azul "
+              f"({modo}), {len(linhas_manuais)} laranja.")
 
     except Exception as e:
         print(f"Erro ao escrever no Sheets (nao fatal): {e}")
