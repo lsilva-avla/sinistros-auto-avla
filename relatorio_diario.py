@@ -13,6 +13,8 @@ import re
 import os
 import sys
 import json
+import calendar
+import urllib.request
 import pandas as pd
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -364,10 +366,12 @@ def _find_col(df, *keywords):
 
 
 def carregar_tabelas_auxiliares():
-    """Carrega lookup de SEGURADOS_CNAE (apólice → vigência, setor, subsetor)."""
-    path_cnae = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
+    """Carrega lookups de SEGURADOS_CNAE e GRUPO_ECONOMICO."""
+    path_cnae  = os.path.join(BASE_DIR, 'dados', 'SEGURADOS_CNAE.xlsx')
+    path_grupo = os.path.join(BASE_DIR, 'dados', 'GRUPO_ECONOMICO.xlsx')
 
-    lookup_cnae = {}
+    lookup_cnae  = {}
+    lookup_grupo = {}
 
     # — SEGURADOS_CNAE —
     if os.path.exists(path_cnae):
@@ -397,13 +401,38 @@ def carregar_tabelas_auxiliares():
         except Exception as e:
             print(f"Erro ao carregar SEGURADOS_CNAE: {e}")
     else:
-        print("SEGURADOS_CNAE.xlsx não encontrado — enriquecimento pulado.")
+        print("SEGURADOS_CNAE.xlsx nao encontrado — enriquecimento CNAE pulado.")
 
-    return lookup_cnae
+    # — GRUPO ECONÔMICO — (gravado no Sheets para o dashboard; fora do email/Excel)
+    if os.path.exists(path_grupo):
+        try:
+            df = pd.read_excel(path_grupo)
+            col_id    = _find_col(df, 'identificador participante', 'identificador') or df.columns[2]
+            col_grupo = _find_col(df, 'grupo econ', 'grupo economico') or df.columns[4]
+            print(f"  > Grupo cols: id={col_id}, grupo={col_grupo}")
+            for _, row in df.iterrows():
+                digits = _normalizar_cnpj(row[col_id])
+                grupo  = _tc(row[col_grupo])
+                if digits and grupo and digits not in lookup_grupo:
+                    lookup_grupo[digits] = grupo
+            print(f"GRUPO ECONOMICO: {len(lookup_grupo)} participantes carregados.")
+        except Exception as e:
+            print(f"Erro ao carregar GRUPO_ECONOMICO: {e}")
+    else:
+        print("GRUPO_ECONOMICO.xlsx nao encontrado.")
+
+    return lookup_cnae, lookup_grupo
 
 
-def enriquecer(registros: list, lookup_cnae: dict) -> list:
-    """Enriquece registros com CNAE e aplica Title Case nos campos de texto."""
+def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
+    """
+    Enriquece cada registro com:
+    - Title Case nos campos de texto livre
+    - CNAE: Vigencia Inicio/Fim, SETOR, SUBSETOR (via apólice)
+    - Grupo Econômico (via CNPJ — apenas no Sheets/dashboard, fora do email)
+    - Data_ISO (YYYY-MM-DD) e Mes_Ano (YYYY-MM) para filtros no Looker
+    - Valor BRL (float), FX PTAX e Valor USD (conversão pelo último dia útil do mês)
+    """
     sem_cnae = []
 
     for r in registros:
@@ -421,6 +450,22 @@ def enriquecer(registros: list, lookup_cnae: dict) -> list:
         r['SUBSETOR']        = cnae_info.get('SUBSETOR', '')
         if not cnae_info:
             sem_cnae.append(apolice or r.get('Apólice', '?'))
+
+        # Grupo Econômico via CNPJ
+        cnpj_digits          = _normalizar_cnpj(r.get('CNPJ do Devedor', ''))
+        r['Grupo Econômico'] = lookup_grupo.get(cnpj_digits, '')
+
+        # Data no formato ISO e agrupamento Mês/Ano
+        d = _parse_date(r.get('Data', ''))
+        r['Data_ISO'] = d.strftime('%Y-%m-%d') if d.year >= 2020 else ''
+        r['Mes_Ano']  = d.strftime('%Y-%m')    if d.year >= 2020 else ''
+
+        # Valor BRL (numérico), cotação PTAX e conversão USD
+        valor_brl    = parse_valor(r.get('Valor Sinistrado', ''))
+        r['Valor BRL'] = round(valor_brl, 2)
+        ptax = _get_ptax(d.year, d.month) if d.year >= 2020 and valor_brl else 0.0
+        r['FX PTAX']   = ptax
+        r['Valor USD']  = round(valor_brl / ptax, 2) if ptax else 0.0
 
     total    = len(registros)
     com_cnae = total - len(sem_cnae)
@@ -440,14 +485,65 @@ def _parse_date(s: str) -> date:
 
 
 # ─────────────────────────────────────────────
+#  Cotação FX — BCB PTAX (gratuita, sem chave)
+# ─────────────────────────────────────────────
+
+_ptax_cache: dict = {}
+
+def _get_ptax(ano: int, mes: int) -> float:
+    """
+    Retorna a cotação USD/BRL (PTAX venda) do último dia útil do mês via BCB.
+    Para o mês corrente, usa o último dia disponível (até ontem).
+    Resultados em cache para evitar chamadas repetidas por mês.
+    """
+    chave = (ano, mes)
+    if chave in _ptax_cache:
+        return _ptax_cache[chave]
+
+    hoje   = date.today()
+    ultimo = calendar.monthrange(ano, mes)[1]
+    # Mês corrente: não ultrapassa ontem
+    if ano == hoje.year and mes == hoje.month:
+        ultimo = min(ultimo, (hoje - timedelta(days=1)).day)
+
+    for delta in range(0, 10):
+        d = date(ano, mes, ultimo) - timedelta(days=delta)
+        if d.month != mes:
+            break
+        data_str = d.strftime('%m-%d-%Y')
+        url = (
+            'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
+            f'CotacaoDolarDia(dataCotacao=@d)?@d=%27{data_str}%27'
+            '&$format=json&$select=cotacaoVenda'
+        )
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                valores = json.loads(resp.read()).get('value', [])
+                if valores:
+                    taxa = float(valores[-1]['cotacaoVenda'])
+                    _ptax_cache[chave] = taxa
+                    print(f"  PTAX {ano}/{mes:02d}: R$ {taxa:.4f} (ref. {d})")
+                    return taxa
+        except Exception:
+            pass
+
+    print(f"  [!] PTAX nao encontrada para {ano}/{mes:02d} — Valor USD zerado")
+    _ptax_cache[chave] = 0.0
+    return 0.0
+
+
+# ─────────────────────────────────────────────
 #  Google Sheets
 # ─────────────────────────────────────────────
 
 COLUNAS_SHEETS = [
-    'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
+    'ID', 'N° Sinistro', 'Data', 'Data_ISO', 'Mes_Ano',
+    'Segurado', 'Filial', 'Apólice',
     'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
-    'Valor Sinistrado', 'Vigencia Inicio', 'Vigencia Fim',
-    'SETOR', 'SUBSETOR',
+    'Valor Sinistrado', 'Valor BRL', 'FX PTAX', 'Valor USD',
+    'Vigencia Inicio', 'Vigencia Fim',
+    'SETOR', 'SUBSETOR', 'Grupo Econômico',
 ]
 
 
@@ -477,15 +573,23 @@ def escrever_sheets(registros: list):
 
         valores = aba.get_all_values()
 
+        # Auto-rebuild: se o schema mudou, recria a aba do zero
+        # (seguro: o daily já coleta todo o ano, então tudo é re-inserido)
+        header_atual = valores[0] if valores else []
+        if header_atual and header_atual != COLUNAS_SHEETS:
+            print(f"Schema desatualizado ({len(header_atual)} cols → {len(COLUNAS_SHEETS)} cols). Recriando Base...")
+            aba.clear()
+            valores = []
+
         if not valores:
             aba.append_row(COLUNAS_SHEETS, value_input_option='USER_ENTERED')
             existentes = set()
             prox_id    = 1
         else:
-            header    = valores[0]
-            idx_num   = header.index('N° Sinistro') if 'N° Sinistro' in header else 1
+            header     = valores[0]
+            idx_num    = header.index('N° Sinistro') if 'N° Sinistro' in header else 1
             existentes = {row[idx_num] for row in valores[1:] if len(row) > idx_num}
-            prox_id   = len(valores)   # ID sequencial continua de onde parou
+            prox_id    = len(valores)  # ID sequencial continua de onde parou
 
         novos = [r for r in registros if str(r.get('N° Sinistro', '')) not in existentes]
 
@@ -795,8 +899,8 @@ def main():
         print(f"{len(registros_ontem)} sinistro(s) em {ontem_str} — modo normal.")
 
     # Enriquece TODOS os registros do ano
-    lookup_cnae = carregar_tabelas_auxiliares()
-    registros_ano = enriquecer(registros_ano, lookup_cnae)
+    lookup_cnae, lookup_grupo = carregar_tabelas_auxiliares()
+    registros_ano = enriquecer(registros_ano, lookup_cnae, lookup_grupo)
 
     # Escreve tudo na base online (dedup por N° Sinistro)
     escrever_sheets(registros_ano)
