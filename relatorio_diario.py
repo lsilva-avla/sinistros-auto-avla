@@ -501,6 +501,10 @@ def enriquecer(registros: list, lookup_cnae: dict, lookup_grupo: dict) -> list:
             r['FX PTAX']   = 0.0
             r['Valor USD'] = 0.0
 
+        # Campos de rastreabilidade
+        r.setdefault('Origem', 'Email')
+        r.setdefault('Observações', '')
+
     total    = len(registros)
     com_cnae = total - len(sem_cnae)
     print(f"Enriquecimento: {com_cnae}/{total} com CNAE")
@@ -637,16 +641,194 @@ COLUNAS_SHEETS = [
     'Valor Sinistrado', 'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
     'Vigencia Inicio', 'Vigencia Fim',
     'SETOR', 'SUBSETOR', 'Grupo Econômico',
+    'Observações', 'Origem',           # 'Observações' = notas manuais; 'Origem' = Email|Manual
 ]
 
 # Colunas que devem ser gravadas como número (float) no Sheets
 _COLUNAS_NUMERICAS = {'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD'}
 
 
-def escrever_sheets(registros: list):
+# ─────────────────────────────────────────────
+#  Casos manuais (segunda aba do Sheets)
+# ─────────────────────────────────────────────
+
+def _mapear_header_manual(header: list) -> dict:
+    """
+    Mapeia as colunas da aba manual para os campos internos de COLUNAS_SHEETS.
+    Retorna {indice_coluna: nome_campo_interno}.
+    Usa matching flexível: exato > startswith > contains.
+    """
+    _alias = {
+        'N° Sinistro':      ['n° sinistro', 'nº sinistro', 'n sinistro', 'sinistro',
+                             'no sinistro', 'numero sinistro', 'num sinistro', 'n°sinistro'],
+        'Data':             ['data', 'date', 'fecha'],
+        'Segurado':         ['segurado'],
+        'Filial':           ['filial'],
+        'Apólice':          ['apolice', 'apólice', 'poliza', 'póliza', 'policia'],
+        'Devedor':          ['devedor', 'deudor', 'tomador'],
+        'CNPJ do Devedor':  ['cnpj', 'cpf/cnpj', 'cpf', 'rut', 'documento'],
+        'Ocorrência':       ['ocorrência', 'ocorrencia', 'tipo', 'tipo sinistro',
+                             'tipo de sinistro'],
+        'Declaração':       ['declaração', 'declaracao', 'fecha declaracion'],
+        'Valor Sinistrado': ['valor sinistrado', 'valor', 'monto', 'monto sinistrado',
+                             'valor do sinistro'],
+        'Observações':      ['observações', 'observacao', 'observacoes', 'obs',
+                             'notas', 'nota', 'descricao', 'descrição',
+                             'dicionario', 'dicionário', 'comentario', 'comentários'],
+    }
+    mapping = {}
+    campos_mapeados = set()
+    for ci, col in enumerate(header):
+        col_l = col.strip().lower()
+        if not col_l:
+            continue
+        for campo, aliases in _alias.items():
+            if campo in campos_mapeados:
+                continue
+            for a in aliases:
+                if col_l == a or col_l.startswith(a) or a in col_l:
+                    mapping[ci]       = campo
+                    campos_mapeados.add(campo)
+                    break
+    return mapping
+
+
+def ler_casos_manuais(sh, lookup_cnae: dict, lookup_grupo: dict) -> list:
+    """
+    Lê a segunda aba do Sheets (qualquer aba que não seja 'Base').
+    - Filtra linhas marcadas com X se houver coluna de marcação
+    - Enriquece sem sobrescrever campos já preenchidos por Maity
+    - Retorna registros com Origem='Manual'
+    """
+    try:
+        worksheets  = sh.worksheets()
+        aba_manual  = next((ws for ws in worksheets
+                            if ws.title.strip().lower() != 'base'), None)
+        if aba_manual is None:
+            print("  [!] Aba manual nao encontrada (so existe 'Base').")
+            return []
+
+        print(f"  > Lendo casos manuais de '{aba_manual.title}'...")
+        rows = aba_manual.get_all_values()
+        if not rows or len(rows) < 2:
+            print("  Aba manual vazia.")
+            return []
+
+        header  = rows[0]
+        mapping = _mapear_header_manual(header)
+        print(f"  > Colunas mapeadas: {list(mapping.values())}")
+
+        # Detecta coluna de marcação X (coluna fora do mapping com apenas X/Sim/Ok/vazio)
+        mapped_idx = set(mapping.keys())
+        col_x = None
+        for ci, col in enumerate(header):
+            if ci in mapped_idx or not col.strip():
+                continue
+            vals_nv = [rows[ri][ci].strip().upper()
+                       for ri in range(1, len(rows))
+                       if len(rows[ri]) > ci and rows[ri][ci].strip()]
+            if vals_nv and all(v in ('X', 'SIM', 'S', '1', 'OK', 'V', 'YES') for v in vals_nv):
+                col_x = ci
+                print(f"  > Coluna de marcacao X: '{col}' (col {ci})")
+                break
+
+        registros = []
+        for row in rows[1:]:
+            if not any(c.strip() for c in row):
+                continue
+
+            # Filtra por marcação X se detectada
+            if col_x is not None:
+                marca = row[col_x].strip().upper() if len(row) > col_x else ''
+                if marca not in ('X', 'SIM', 'S', '1', 'OK', 'V', 'YES'):
+                    continue
+
+            r = {}
+            for ci, campo in mapping.items():
+                val = row[ci].strip() if len(row) > ci else ''
+                if val and val.lower() not in ('nan', 'none'):
+                    r[campo] = val
+
+            # Só importa se tiver pelo menos N° Sinistro ou Devedor preenchido
+            if not r.get('N° Sinistro') and not r.get('Devedor'):
+                continue
+
+            r['Origem']     = 'Manual'
+            r.setdefault('Observações', '')
+            registros.append(r)
+
+        print(f"  Casos manuais lidos: {len(registros)} de {len(rows)-1} linhas.")
+
+        # ── Enriquecimento sem sobrescrever campos manuais ──────
+        for r in registros:
+            for campo in ('Segurado', 'Filial', 'Devedor', 'Ocorrência', 'Declaração'):
+                if r.get(campo):
+                    r[campo] = _tc(r[campo])
+
+            apolice   = _normalizar_apolice(r.get('Apólice', ''))
+            cnae_info = lookup_cnae.get(apolice, {})
+            for chave in ('Vigencia Inicio', 'Vigencia Fim', 'SETOR', 'SUBSETOR'):
+                if not r.get(chave):
+                    r[chave] = cnae_info.get(chave, '')
+
+            if not r.get('Grupo Econômico'):
+                cnpj_d = _normalizar_cnpj(r.get('CNPJ do Devedor', ''))
+                r['Grupo Econômico'] = lookup_grupo.get(cnpj_d, '')
+
+            d = _parse_date(r.get('Data', ''))
+            r.setdefault('Data_ISO', d.strftime('%Y-%m-%d') if d.year >= 2020 else '')
+            r.setdefault('Mes_Ano',  d.strftime('%Y-%m')    if d.year >= 2020 else '')
+
+            if not r.get('Valor BRL'):
+                moeda, v_orig = _detect_moeda(r.get('Valor Sinistrado', ''))
+                r.setdefault('Moeda',          moeda)
+                r.setdefault('Valor Original', round(v_orig, 2))
+                if d.year >= 2020 and v_orig:
+                    if moeda == 'BRL':
+                        pu = _get_ptax(d.year, d.month, 'USD')
+                        r['Valor BRL'] = round(v_orig, 2)
+                        r['FX PTAX']   = pu
+                        r['Valor USD'] = round(v_orig / pu, 2) if pu else 0.0
+                    elif moeda == 'USD':
+                        pu = _get_ptax(d.year, d.month, 'USD')
+                        r['Valor BRL'] = round(v_orig * pu, 2) if pu else 0.0
+                        r['FX PTAX']   = pu
+                        r['Valor USD'] = round(v_orig, 2)
+                    elif moeda == 'EUR':
+                        pe = _get_ptax(d.year, d.month, 'EUR')
+                        pu = _get_ptax(d.year, d.month, 'USD')
+                        vb = round(v_orig * pe, 2) if pe else 0.0
+                        r['Valor BRL'] = vb
+                        r['FX PTAX']   = pu
+                        r['Valor USD'] = round(vb / pu, 2) if pu else 0.0
+
+        return registros
+
+    except Exception as e:
+        print(f"  [!] Erro ao ler casos manuais: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────
+#  Google Sheets — Base
+# ─────────────────────────────────────────────
+
+def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dict = None):
+    """
+    Reconstrói a aba 'Base' do zero a cada execução:
+    1. Lê casos manuais da segunda aba (enriquece via tabelas auxiliares)
+    2. Mescla com registros de email; dedup por N° Sinistro (email > manual)
+    3. Ordena por data (mais antiga → mais recente)
+    4. Reescreve Base inteira (garante ordenação e consistência)
+    5. Destaca em laranja as linhas de origem manual
+    6. Formata coluna Valor BRL como moeda R$
+    """
     if not GSHEET_CREDS or not GSHEET_ID:
-        print("Sheets: GSHEET_CREDENTIALS ou GSHEET_ID não configurados — pulando.")
+        print("Sheets: credenciais nao configuradas — pulando.")
         return
+
+    lookup_cnae  = lookup_cnae  or {}
+    lookup_grupo = lookup_grupo or {}
 
     try:
         import gspread
@@ -667,35 +849,25 @@ def escrever_sheets(registros: list):
         except gspread.exceptions.WorksheetNotFound:
             aba = sh.add_worksheet('Base', rows=50000, cols=len(COLUNAS_SHEETS))
 
-        valores = aba.get_all_values()
+        # ── Casos manuais da 2ª aba ───────────────────────────
+        manuais = ler_casos_manuais(sh, lookup_cnae, lookup_grupo)
 
-        # Auto-rebuild: se o schema mudou, recria a aba do zero
-        # (seguro: o daily já coleta todo o ano, então tudo é re-inserido)
-        header_atual = valores[0] if valores else []
-        if header_atual and header_atual != COLUNAS_SHEETS:
-            print(f"Schema desatualizado ({len(header_atual)} cols → {len(COLUNAS_SHEETS)} cols). Recriando Base...")
-            aba.clear()
-            valores = []
+        # ── Merge: email tem prioridade no dedup ──────────────
+        num_emails = {str(r.get('N° Sinistro', '')) for r in registros}
+        extras     = [m for m in manuais if str(m.get('N° Sinistro', '')) not in num_emails]
+        todos      = list(registros) + extras
 
-        if not valores:
-            aba.append_row(COLUNAS_SHEETS, value_input_option='USER_ENTERED')
-            existentes = set()
-            prox_id    = 1
-        else:
-            header     = valores[0]
-            idx_num    = header.index('N° Sinistro') if 'N° Sinistro' in header else 1
-            existentes = {row[idx_num] for row in valores[1:] if len(row) > idx_num}
-            prox_id    = len(valores)  # ID sequencial continua de onde parou
+        # ── Ordena por Data_ISO (mais antiga → mais recente) ──
+        todos.sort(key=lambda r: r.get('Data_ISO', '') or 'zzzz')
 
-        novos = [r for r in registros if str(r.get('N° Sinistro', '')) not in existentes]
+        # ── Reconstrói Base do zero ───────────────────────────
+        aba.clear()
 
-        if not novos:
-            print(f"Sheets: nenhum registro novo (já existem {len(existentes)}).")
-            return
+        rows_data      = []
+        linhas_manuais = []   # índices de linha no Sheets (1-based, incluindo header)
 
-        rows = []
-        for i, r in enumerate(novos, start=prox_id):
-            row = [i]
+        for seq_id, r in enumerate(todos, start=1):
+            row = [seq_id]
             for c in COLUNAS_SHEETS[1:]:
                 val = r.get(c, '') or ''
                 if c in _COLUNAS_NUMERICAS:
@@ -705,24 +877,53 @@ def escrever_sheets(registros: list):
                         row.append(0.0)
                 else:
                     row.append(str(val))
-            rows.append(row)
+            rows_data.append(row)
+            if r.get('Origem') == 'Manual':
+                linhas_manuais.append(seq_id + 1)   # +1 porque linha 1 = cabeçalho
 
-        aba.append_rows(rows, value_input_option='USER_ENTERED')
-        print(f"Sheets: {len(novos)} novos registros inseridos (total agora: {prox_id + len(novos) - 1}).")
+        aba.update('A1', [COLUNAS_SHEETS] + rows_data, value_input_option='USER_ENTERED')
+        n_email  = len(todos) - len(extras)
+        n_manual = len(extras)
+        print(f"Sheets: Base reconstruida — {len(todos)} registros "
+              f"({n_email} email + {n_manual} manuais), ordenados por data.")
 
-        # Formata coluna Valor BRL como moeda R$
+        # ── Formato moeda R$ na coluna Valor BRL ─────────────
         try:
-            col_brl = COLUNAS_SHEETS.index('Valor BRL') + 1   # 1-based
-            letra = _col_letter(col_brl)
+            col_brl = COLUNAS_SHEETS.index('Valor BRL') + 1
+            letra   = _col_letter(col_brl)
             aba.format(f'{letra}2:{letra}50000', {
                 'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
             })
-            print(f"  > Coluna Valor BRL ({letra}) formatada como moeda R$.")
         except Exception as e:
-            print(f"  [!] Nao foi possivel formatar Valor BRL: {e}")
+            print(f"  [!] Erro ao formatar Valor BRL: {e}")
+
+        # ── Destaque laranja nos casos manuais ────────────────
+        if linhas_manuais:
+            nc = len(COLUNAS_SHEETS)
+            sh.batch_update({'requests': [
+                {
+                    'repeatCell': {
+                        'range': {
+                            'sheetId':          aba.id,
+                            'startRowIndex':    ln - 1,   # 0-based
+                            'endRowIndex':      ln,
+                            'startColumnIndex': 0,
+                            'endColumnIndex':   nc,
+                        },
+                        'cell': {
+                            'userEnteredFormat': {
+                                'backgroundColor': {'red': 1.0, 'green': 0.6, 'blue': 0.0}
+                            }
+                        },
+                        'fields': 'userEnteredFormat.backgroundColor'
+                    }
+                }
+                for ln in linhas_manuais
+            ]})
+            print(f"  > {len(linhas_manuais)} linhas manuais destacadas em laranja.")
 
     except Exception as e:
-        print(f"Erro ao escrever no Sheets (não fatal): {e}")
+        print(f"Erro ao escrever no Sheets (nao fatal): {e}")
 
 
 # ─────────────────────────────────────────────
@@ -767,6 +968,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
         'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
         'Vigencia Inicio', 'Vigencia Fim',
         'SETOR', 'SUBSETOR', 'Grupo Econômico',
+        'Origem',   # derivado do processamento
     }
     # Colunas numéricas → gravar como float + formato numérico
     fmt_map = {
@@ -808,7 +1010,7 @@ def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO
     # Campos de texto → Title Case no Excel (defesa além do enriquecer)
     cols_texto = {
         'Segurado', 'Filial', 'Devedor', 'Ocorrência', 'Declaração',
-        'SETOR', 'SUBSETOR', 'Grupo Econômico',
+        'SETOR', 'SUBSETOR', 'Grupo Econômico', 'Observações',
     }
 
     # Linha 3+ — dados ────────────────────────────────────────
@@ -1088,10 +1290,11 @@ def main():
     lookup_cnae, lookup_grupo = carregar_tabelas_auxiliares()
     registros_ano = enriquecer(registros_ano, lookup_cnae, lookup_grupo)
 
-    # Escreve tudo na base online (dedup por N° Sinistro)
-    escrever_sheets(registros_ano)
+    # Escreve na base online — também lê e mescla casos manuais da 2ª aba
+    escrever_sheets(registros_ano, lookup_cnae, lookup_grupo)
 
     # Re-filtra registros para exibição nos cards (após enriquecimento)
+    # Nota: cards/email usam apenas os casos de email (não os manuais)
     if not fallback:
         registros_display = [r for r in registros_ano if r.get('Data') == ontem_str]
     else:
@@ -1099,7 +1302,10 @@ def main():
         registros_display = [r for r in registros_ano
                              if _parse_date(r.get('Data', '')) >= corte_7d]
 
-    # Excel com TODOS os registros do ano; destaque no período de display
+    # Excel com TODOS os registros (email + manuais), ordenados por data
+    # Para isso, lemos os manuais de novo (já enriquecidos, sem conexão Sheets)
+    # Usamos o registros_ano já enriquecido; manuais serão incluídos pelo Sheets mas
+    # o Excel só tem email para não duplicar (já que Sheets tem a visão completa)
     excel = gerar_excel(registros_ano, ontem, fallback=fallback)
 
     # Email: cards do período de display; descrição do Excel mostra total do ano
