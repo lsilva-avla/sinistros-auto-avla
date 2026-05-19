@@ -401,8 +401,8 @@ def carregar_tabelas_auxiliares():
                 vi = row.get(col_vi, '')
                 vf = row.get(col_vf, '')
                 lookup_cnae[chave] = {
-                    'Vigencia Inicio': vi.strftime('%d/%m/%Y') if hasattr(vi, 'strftime') else str(vi or ''),
-                    'Vigencia Fim':    vf.strftime('%d/%m/%Y') if hasattr(vf, 'strftime') else str(vf or ''),
+                    'Vigencia Inicio': vi.strftime('%d/%m/%Y') if (hasattr(vi, 'strftime') and vi.year >= 1950) else '',
+                    'Vigencia Fim':    vf.strftime('%d/%m/%Y') if (hasattr(vf, 'strftime') and vf.year >= 1950) else '',
                     'SETOR':    _tc(row.get(col_set, '')),
                     'SUBSETOR': _tc(row.get(col_sub, '')),
                 }
@@ -641,7 +641,7 @@ COLUNAS_SHEETS = [
     'Valor Sinistrado', 'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
     'Vigencia Inicio', 'Vigencia Fim',
     'SETOR', 'SUBSETOR', 'Grupo Econômico',
-    'Observações', 'Origem',           # 'Observações' = notas manuais; 'Origem' = Email|Manual
+    'Observações', 'Discricionário', 'Origem',  # 'Discricionário' = X onde marcado; 'Origem' = Email|Manual
 ]
 
 # Colunas que devem ser gravadas como número (float) no Sheets
@@ -675,6 +675,8 @@ def _mapear_header_manual(header: list) -> dict:
         'Observações':      ['observações', 'observacao', 'observacoes', 'obs',
                              'notas', 'nota', 'descricao', 'descrição',
                              'dicionario', 'dicionário', 'comentario', 'comentários'],
+        'Discricionário':   ['discricionário', 'discricionario', 'discricionária',
+                             'discricionaria', 'discr'],
     }
     mapping = {}
     campos_mapeados = set()
@@ -977,6 +979,21 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
             'fields': 'userEnteredFormat.numberFormat',
         }})
 
+        # 6b. Formato NUMBER explícito para Valor Original, FX PTAX, Valor USD
+        #     aba.clear() não limpa formatação — se uma execução anterior gravou
+        #     formato de data nestas colunas, os valores float renderizariam como datas.
+        for _cn, _fmt in [('Valor Original', '#,##0.00'),
+                           ('FX PTAX',        '#,##0.0000'),
+                           ('Valor USD',      '#,##0.00')]:
+            _ci = COLUNAS_SHEETS.index(_cn)
+            requests.append({'repeatCell': {
+                'range': _rng(2, 50000, _ci, _ci + 1),
+                'cell': {'userEnteredFormat': {
+                    'numberFormat': {'type': 'NUMBER', 'pattern': _fmt}
+                }},
+                'fields': 'userEnteredFormat.numberFormat',
+            }})
+
         # 7. Azul claro nos dados recentes (D-1 ou últimos 7 dias)
         for ln in linhas_destaque:
             requests.append({'repeatCell': {
@@ -1008,8 +1025,8 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
 
 def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO:
     """
-    Gera Excel com TODOS os registros do ano (23 colunas, A–W).
-    - Linha 1 : título mesclado A1:W1 — azul escuro, texto branco
+    Gera Excel com TODOS os registros do ano (26 colunas, A–Z).
+    - Linha 1 : título mesclado A1:Z1 — azul escuro, texto branco
     - Linha 2 : cabeçalhos de coluna — azul (dados) / verde (enriquecidos), texto branco
     - Linha 3+: dados; destaca ontem (normal) ou últimos 7 dias (fallback)
     """
