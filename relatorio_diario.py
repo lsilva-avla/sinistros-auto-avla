@@ -336,6 +336,15 @@ def _normalizar_cnpj(v) -> str:
     return digits
 
 
+def _col_letter(n: int) -> str:
+    """Converte índice de coluna 1-based em letra(s) Excel. 1→A, 26→Z, 27→AA."""
+    s = ''
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
 def _find_col(df, *keywords):
     """
     Localiza coluna pelo nome com 3 níveis de precisão (case-insensitive):
@@ -704,13 +713,6 @@ def escrever_sheets(registros: list):
         # Formata coluna Valor BRL como moeda R$
         try:
             col_brl = COLUNAS_SHEETS.index('Valor BRL') + 1   # 1-based
-            # Converte índice numérico em letra(s) de coluna Excel (A, B, ..., Z, AA, ...)
-            def _col_letter(n):
-                s = ''
-                while n > 0:
-                    n, r = divmod(n - 1, 26)
-                    s = chr(65 + r) + s
-                return s
             letra = _col_letter(col_brl)
             aba.format(f'{letra}2:{letra}50000', {
                 'numberFormat': {'type': 'CURRENCY', 'pattern': '"R$ "#,##0.00'}
@@ -728,66 +730,128 @@ def escrever_sheets(registros: list):
 # ─────────────────────────────────────────────
 
 def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO:
-    """Gera Excel com TODOS os registros do ano. Destaca ontem ou últimos 7 dias."""
-    colunas = [
-        'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
-        'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
-        'Valor Sinistrado', 'Vigencia Inicio', 'Vigencia Fim',
-        'SETOR', 'SUBSETOR',
-    ]
+    """
+    Gera Excel com TODOS os registros do ano (23 colunas, A–W).
+    - Linha 1 : título mesclado A1:W1 — azul escuro, texto branco
+    - Linha 2 : cabeçalhos de coluna — azul (dados) / verde (enriquecidos), texto branco
+    - Linha 3+: dados; destaca ontem (normal) ou últimos 7 dias (fallback)
+    """
+    colunas = list(COLUNAS_SHEETS)   # 23 colunas (A–W)
 
+    # ── Monta DataFrame ──────────────────────────────────────
     df = pd.DataFrame(registros)
-    df.insert(0, 'ID', range(1, len(df) + 1))
     for col in colunas:
         if col not in df.columns:
             df[col] = ''
-    df = df[colunas]
+    df = df.reindex(columns=[c for c in colunas if c != 'ID'])
+
+    # ── Paleta / estilos ─────────────────────────────────────
+    AZUL    = '003087'
+    VERDE   = '1D6F42'
+    BRANCO  = 'FFFFFF'
+    DEST    = 'DCF0FF'
+
+    fill_azul   = PatternFill(fill_type='solid', fgColor=AZUL)
+    fill_verde  = PatternFill(fill_type='solid', fgColor=VERDE)
+    fill_dest   = PatternFill(fill_type='solid', fgColor=DEST)
+    font_titulo = Font(bold=True, color=BRANCO, size=13, name='Arial')
+    font_header = Font(bold=True, color=BRANCO, size=10, name='Arial')
+    font_body   = Font(name='Arial', size=10)
+    al_center   = Alignment(horizontal='center', vertical='center')
+    al_wrap     = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    al_body     = Alignment(vertical='center')
+
+    # Colunas enriquecidas/calculadas → cabeçalho verde
+    cols_verde = {
+        'Data_ISO', 'Mes_Ano',
+        'Moeda', 'Valor Original', 'Valor BRL', 'FX PTAX', 'Valor USD',
+        'Vigencia Inicio', 'Vigencia Fim',
+        'SETOR', 'SUBSETOR', 'Grupo Econômico',
+    }
+    # Colunas numéricas → gravar como float + formato numérico
+    fmt_map = {
+        'Valor Original': '#,##0.00',
+        'Valor BRL':      '#,##0.00',
+        'FX PTAX':        '#,##0.0000',
+        'Valor USD':      '#,##0.00',
+    }
+
+    # ── Workbook ─────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Sinistros 2026'
+
+    num_cols   = len(colunas)
+    ultima_col = _col_letter(num_cols)   # 23 → 'W'
+
+    # Linha 1 — título mesclado ───────────────────────────────
+    ws.merge_cells(f'A1:{ultima_col}1')
+    tc = ws['A1']
+    tc.value     = f'Relatório de Sinistros — AVLA Crédito {ontem.year}'
+    tc.font      = font_titulo
+    tc.fill      = fill_azul
+    tc.alignment = al_center
+    ws.row_dimensions[1].height = 30
+
+    # Linha 2 — cabeçalhos ────────────────────────────────────
+    for ci, col_name in enumerate(colunas, start=1):
+        cell = ws.cell(row=2, column=ci, value=col_name)
+        cell.font      = font_header
+        cell.fill      = fill_verde if col_name in cols_verde else fill_azul
+        cell.alignment = al_wrap
+    ws.row_dimensions[2].height = 24
+
+    # Lógica de destaque ──────────────────────────────────────
+    ontem_str = ontem.strftime('%d/%m/%Y')
+    corte_7d  = date.today() - timedelta(days=7)
+
+    # Linha 3+ — dados ────────────────────────────────────────
+    for seq_id, (_, row) in enumerate(df.iterrows(), start=1):
+        xl_row = seq_id + 2   # linha Excel = seq_id + 2 (linhas 1 e 2 são cabeçalhos)
+
+        data_str = str(row.get('Data', '') or '')
+        try:
+            data_row = datetime.strptime(data_str, '%d/%m/%Y').date()
+            destacar = (data_row >= corte_7d) if fallback else (data_str == ontem_str)
+        except (ValueError, TypeError):
+            destacar = False
+
+        fill_linha = fill_dest if destacar else None
+
+        for ci, col_name in enumerate(colunas, start=1):
+            if col_name == 'ID':
+                val = seq_id
+            else:
+                raw = row.get(col_name, '')
+                if col_name in fmt_map:
+                    try:
+                        val = float(raw) if raw not in ('', None) else 0.0
+                    except (ValueError, TypeError):
+                        val = 0.0
+                else:
+                    val = '' if (raw is None or str(raw).lower() in ('nan', 'none', '')) else str(raw)
+
+            cell = ws.cell(row=xl_row, column=ci, value=val)
+            cell.font      = font_body
+            cell.alignment = al_body
+            if col_name in fmt_map:
+                cell.number_format = fmt_map[col_name]
+            if fill_linha:
+                cell.fill = fill_linha
+
+    # Auto-width ──────────────────────────────────────────────
+    sample = df.head(50)
+    for ci, col_name in enumerate(colunas, start=1):
+        letra = _col_letter(ci)
+        if col_name in sample.columns and not sample.empty:
+            amostra = sample[col_name].fillna('').astype(str).tolist()
+        else:
+            amostra = []
+        max_len = max(len(col_name), max((len(v) for v in amostra), default=0))
+        ws.column_dimensions[letra].width = min(max_len + 4, 40)
 
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        nome_aba = f"Sinistros 2026"
-        df.to_excel(writer, index=False, sheet_name=nome_aba)
-        ws = writer.sheets[nome_aba]
-
-        # Cabeçalho azul escuro
-        header_font = Font(bold=True, color='FFFFFF', size=11)
-        header_fill = PatternFill(fill_type='solid', fgColor='003087')
-        for cell in ws[1]:
-            cell.font      = header_font
-            cell.fill      = header_fill
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-        ws.row_dimensions[1].height = 20
-
-        # Colunas enriquecidas com cabeçalho verde escuro
-        cols_enrich = ['Vigencia Inicio', 'Vigencia Fim', 'SETOR', 'SUBSETOR']
-        enrich_fill = PatternFill(fill_type='solid', fgColor='1D6F42')
-        for cell in ws[1]:
-            if cell.value in cols_enrich:
-                cell.fill = enrich_fill
-
-        # Auto-width
-        for col in ws.columns:
-            max_len = max((len(str(c.value or '')) for c in col), default=10)
-            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 55)
-
-        # Destaque:
-        # - ontem (D-1) se tiver casos → azul claro
-        # - últimos 7 dias se fallback → azul claro
-        destaque  = PatternFill(fill_type='solid', fgColor='DCF0FF')
-        ontem_str = ontem.strftime('%d/%m/%Y')
-        corte_7d  = date.today() - timedelta(days=7)
-
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            try:
-                data_str = str(row[2].value or '')
-                data_row = datetime.strptime(data_str, '%d/%m/%Y').date()
-                destacar = (data_row >= corte_7d) if fallback else (data_str == ontem_str)
-                if destacar:
-                    for cell in row:
-                        cell.fill = destaque
-            except (ValueError, TypeError):
-                pass
-
+    wb.save(buf)
     buf.seek(0)
     return buf
 
