@@ -429,7 +429,7 @@ def escrever_sheets(registros: list):
 #  Excel
 # ─────────────────────────────────────────────
 
-def gerar_excel(registros: list, ontem: date) -> BytesIO:
+def gerar_excel(registros: list, ontem: date, fallback: bool = False) -> BytesIO:
     colunas = [
         'ID', 'N° Sinistro', 'Data', 'Segurado', 'Filial', 'Apólice',
         'Devedor', 'CNPJ do Devedor', 'Ocorrência', 'Declaração',
@@ -450,7 +450,7 @@ def gerar_excel(registros: list, ontem: date) -> BytesIO:
         df.to_excel(writer, index=False, sheet_name=nome_aba)
         ws = writer.sheets[nome_aba]
 
-        # Cabeçalho
+        # Cabeçalho azul escuro
         header_font = Font(bold=True, color='FFFFFF', size=11)
         header_fill = PatternFill(fill_type='solid', fgColor='003087')
         for cell in ws[1]:
@@ -459,7 +459,7 @@ def gerar_excel(registros: list, ontem: date) -> BytesIO:
             cell.alignment = Alignment(horizontal='center', vertical='center')
         ws.row_dimensions[1].height = 20
 
-        # Colunas enriquecidas com cabeçalho destacado em verde escuro
+        # Colunas enriquecidas com cabeçalho verde escuro
         cols_enrich = ['Vigencia Inicio', 'Vigencia Fim', 'SETOR', 'SUBSETOR', 'Grupo Econômico']
         enrich_fill = PatternFill(fill_type='solid', fgColor='1D6F42')
         for cell in ws[1]:
@@ -471,12 +471,22 @@ def gerar_excel(registros: list, ontem: date) -> BytesIO:
             max_len = max((len(str(c.value or '')) for c in col), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 55)
 
-        # Destaque: ontem em azul claro (= todos os registros, já que são de ontem)
-        destaque = PatternFill(fill_type='solid', fgColor='DCF0FF')
+        # Destaque de linhas:
+        # - Modo normal: só as linhas de ontem (D-1)
+        # - Modo fallback: todas as linhas dos últimos 7 dias
+        destaque  = PatternFill(fill_type='solid', fgColor='DCF0FF')
         ontem_str = ontem.strftime('%d/%m/%Y')
+        corte_7d  = datetime.now().date() - timedelta(days=7)
+
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             try:
-                if str(row[2].value) == ontem_str:
+                data_str = str(row[2].value or '')
+                if fallback:
+                    data_row = datetime.strptime(data_str, '%d/%m/%Y').date()
+                    destacar = data_row >= corte_7d
+                else:
+                    destacar = data_str == ontem_str
+                if destacar:
                     for cell in row:
                         cell.fill = destaque
             except (ValueError, TypeError):
@@ -510,7 +520,8 @@ def formatar_brl(v: float) -> str:
     return 'R$ ' + '{:.2f}'.format(v).replace('.', ',')
 
 
-def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True):
+def gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
+                     tem_logo=True, fallback=False, casos_ontem=0):
     img_h = ('<img src="cid:avla_logo" alt="AVLA" style="height:52px;display:block;margin:0 auto;">'
              if tem_logo else '<span style="color:white;font-size:26px;font-weight:bold;">AVLA</span>')
     img_f = ('<img src="cid:avla_logo" alt="AVLA" style="height:36px;display:block;margin:0 auto;">'
@@ -523,21 +534,66 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
     if len(maior_nome) > 22:
         maior_nome = maior_nome[:22] + '…'
 
-    # Enriquecimento: quantos tiveram grupo econômico e setor identificados
     com_grupo = sum(1 for r in registros if r.get('Grupo Econômico', ''))
     com_setor = sum(1 for r in registros if r.get('SETOR', ''))
 
-    def card(cor, label, val, sub, width='33%'):
-        fs = '22' if label == 'Total de Casos' else '18'
+    def card(cor, label, val, sub, width='33%', destaque_cor=None):
+        fs = '22' if width == '33%' and label in ('Total de Casos', 'Ontem') else '18'
+        val_style = f'color:{destaque_cor};' if destaque_cor else 'color:#1a1a1a;'
         return (
             f'<td width="{width}" style="padding:0 5px;">'
             f'<div style="border:1px solid #e0e0e0;border-top:4px solid {cor};border-radius:4px;'
             f'padding:16px 12px 12px;text-align:center;">'
             f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;'
             f'letter-spacing:.5px;color:#888;margin-bottom:8px;">{label}</div>'
-            f'<div style="font-size:{fs}px;font-weight:800;color:#1a1a1a;line-height:1.1;">{val}</div>'
+            f'<div style="font-size:{fs}px;font-weight:800;{val_style}line-height:1.1;">{val}</div>'
             f'<div style="font-size:10px;color:#aaa;margin-top:4px;">{sub}</div>'
             f'</div></td>'
+        )
+
+    # Banner de aviso quando não houve casos ontem (modo fallback)
+    banner_fallback = (
+        '<div style="background:#FFF3CD;border:1px solid #FFEAA7;border-radius:4px;'
+        'padding:12px 16px;margin-bottom:20px;font-size:13px;color:#856404;">'
+        '⚠️ <strong>Sem casos registrados ontem.</strong> '
+        'Segue abaixo o resumo dos últimos 7 dias para referência.</div>'
+    ) if fallback else ''
+
+    corpo_texto = (
+        'Não foram registrados avisos de sinistro ontem. '
+        'Para referência, segue o resumo dos últimos 7 dias. '
+        'Os casos estão destacados na planilha Excel em anexo.'
+    ) if fallback else (
+        'Segue o resumo dos avisos de sinistro registrados ontem. '
+        'Os dados completos — incluindo vigência da apólice, setor e grupo econômico — '
+        'estão na planilha Excel em anexo.'
+    )
+
+    # Cards — linha 1
+    if fallback:
+        cards_l1 = (
+            card('#E65100', 'Ontem', '0', 'nenhum caso', destaque_cor='#E65100') +
+            card('#0071CE', 'Última Semana', qtd, 'casos nos 7 dias') +
+            card('#00C4B4', 'Valor Total', formatar_brl(total_v), 'soma da semana')
+        )
+    else:
+        cards_l1 = (
+            card('#0071CE', 'Total de Casos', qtd, 'sinistros ontem') +
+            card('#00C4B4', 'Valor Total', formatar_brl(total_v), 'soma dos sinistrados') +
+            card('#7DC242', 'Maior Caso', formatar_brl(maior_v), maior_nome)
+        )
+
+    # Cards — linha 2
+    if fallback:
+        cards_l2 = (
+            card('#7DC242', 'Maior Caso', formatar_brl(maior_v), maior_nome, '33%') +
+            card('#00A3D9', 'Com Grupo Econ.', com_grupo, 'devedores identificados', '33%') +
+            card('#1D6F42', 'Com Setor CNAE', com_setor, 'apólices identificadas', '33%')
+        )
+    else:
+        cards_l2 = (
+            card('#00A3D9', 'Com Grupo Econ.', com_grupo, 'devedores identificados', '50%') +
+            card('#1D6F42', 'Com Setor CNAE', com_setor, 'apólices identificadas', '50%')
         )
 
     return (
@@ -553,23 +609,14 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
         '<h1 style="font-size:22px;font-weight:700;color:#0071CE;margin:0 0 6px;">'
         'Relatório Diário de Sinistros</h1>'
         f'<p style="font-size:13px;color:#777;margin:0 0 24px;">Período: {label_periodo}</p>'
-        '<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">'
-        'Segue o resumo dos avisos de sinistro registrados ontem. '
-        'Os dados completos — incluindo vigência da apólice, setor e grupo econômico — '
-        'estão na planilha Excel em anexo.</p>'
-        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;"><tr>'
-        f'{card("#0071CE","Total de Casos",qtd,"sinistros ontem")}'
-        f'{card("#00C4B4","Valor Total",formatar_brl(total_v),"soma dos sinistrados")}'
-        f'{card("#7DC242","Maior Caso",formatar_brl(maior_v),maior_nome)}'
-        '</tr></table>'
-        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>'
-        f'{card("#00A3D9","Com Grupo Econ.",com_grupo,"devedores identificados","50%")}'
-        f'{card("#1D6F42","Com Setor CNAE",com_setor,"apólices identificadas","50%")}'
-        '</tr></table>'
+        f'{banner_fallback}'
+        f'<p style="font-size:14px;color:#444;line-height:1.6;margin:0 0 28px;">{corpo_texto}</p>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;"><tr>{cards_l1}</tr></table>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;"><tr>{cards_l2}</tr></table>'
         '<div style="background:#f5f8ff;border:1px solid #d0dff5;border-radius:4px;'
         'padding:14px 18px;margin-bottom:28px;">'
         f'<strong style="color:#1D6F42;display:block;font-size:13px;margin-bottom:4px;">{nome_arquivo}</strong>'
-        f'<span style="font-size:13px;color:#444;">Planilha com todos os {qtd} casos · '
+        f'<span style="font-size:13px;color:#444;">Planilha com {qtd} casos · '
         'Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor, Setor, Grupo Econômico</span>'
         '</div>'
         '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
@@ -585,26 +632,36 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
     )
 
 
-def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, ontem: date):
+def enviar_relatorio(buf: BytesIO, qtd: int, registros: list, ontem: date,
+                     fallback: bool = False):
     label_periodo = ontem.strftime('%d/%m/%Y')
     nome_arquivo  = f"Sinistros_Diario_{ontem.strftime('%d%m%Y')}.xlsx"
 
     logo     = _logo_path()
     tem_logo = os.path.exists(logo)
 
-    plain_text = (
-        f"Olá equipe,\n\nSegue o relatório diário de sinistros de {label_periodo}.\n"
-        f"Total: {qtd} sinistros.\n\nGerado automaticamente às 09h BRT.\n"
-    )
+    if fallback:
+        plain_text = (
+            f"Olá equipe,\n\nSem sinistros registrados ontem ({label_periodo}).\n"
+            f"Segue o resumo dos últimos 7 dias — {qtd} casos.\n\nGerado automaticamente às 09h BRT.\n"
+        )
+        assunto = f'Relatório Diário de Sinistros — {label_periodo} (0 ontem | {qtd} na semana)'
+    else:
+        plain_text = (
+            f"Olá equipe,\n\nSegue o relatório diário de sinistros de {label_periodo}.\n"
+            f"Total: {qtd} sinistros.\n\nGerado automaticamente às 09h BRT.\n"
+        )
+        assunto = f'Relatório Diário de Sinistros — {label_periodo} ({qtd} casos)'
 
     msg = MIMEMultipart('mixed')
     msg['From']    = EMAIL_CAIXA
     msg['To']      = ', '.join(DESTINATARIOS)
-    msg['Subject'] = f'Relatório Diário de Sinistros — {label_periodo} ({qtd} casos)'
+    msg['Subject'] = assunto
 
     related = MIMEMultipart('related')
     related.attach(MIMEText(
-        gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo),
+        gerar_html_email(qtd, registros, label_periodo, nome_arquivo,
+                         tem_logo, fallback=fallback),
         'html', 'utf-8'
     ))
     if tem_logo:
@@ -640,14 +697,24 @@ def main():
     agora = datetime.now()
     print(f"[{agora.strftime('%d/%m/%Y %H:%M')}] Iniciando relatório diário AVLA...")
 
-    inicio, fim = periodo_ontem()
-    ontem = inicio.date()
-    print(f"Período: {ontem.strftime('%d/%m/%Y')} (D-1)")
+    inicio_d1, fim_d1 = periodo_ontem()
+    ontem    = inicio_d1.date()
+    fallback = False
 
-    registros = coletar_emails(inicio, fim)
+    print(f"Buscando D-1: {ontem.strftime('%d/%m/%Y')}")
+    registros = coletar_emails(inicio_d1, fim_d1)
 
     if not registros:
-        print("Nenhum sinistro ontem. Email não enviado.")
+        print("Nenhum sinistro ontem — acionando fallback: últimos 7 dias.")
+        inicio_7d = datetime.combine(date.today() - timedelta(days=7),
+                                     datetime.min.time())
+        fim_7d    = datetime.combine(date.today() - timedelta(days=1),
+                                     datetime.max.time().replace(microsecond=0))
+        registros = coletar_emails(inicio_7d, fim_7d)
+        fallback  = True
+
+    if not registros:
+        print("Nenhum sinistro nos últimos 7 dias. Email não enviado.")
         return
 
     # Enriquece com tabelas auxiliares
@@ -658,8 +725,8 @@ def main():
     escrever_sheets(registros)
 
     # Gera Excel e envia email
-    excel = gerar_excel(registros, ontem)
-    enviar_relatorio(excel, len(registros), registros, ontem)
+    excel = gerar_excel(registros, ontem, fallback=fallback)
+    enviar_relatorio(excel, len(registros), registros, ontem, fallback=fallback)
 
     print("Concluído com sucesso.")
 
