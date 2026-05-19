@@ -1013,7 +1013,17 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
                 'fields': 'userEnteredFormat.numberFormat',
             }})
 
-        # 7. Azul claro nos dados recentes (D-1 ou últimos 7 dias)
+        # 7. Reset: limpa cor de fundo de TODAS as linhas de dados (rows 3+)
+        #    aba.clear() apaga valores mas NÃO formatação — sem este reset, cores de
+        #    execuções anteriores (laranja de linha inteira, etc.) permanecem visíveis.
+        C_BRANCO_BG = _rgb(255, 255, 255)
+        requests.append({'repeatCell': {
+            'range': _rng(2, 50000),
+            'cell': {'userEnteredFormat': {'backgroundColor': C_BRANCO_BG}},
+            'fields': 'userEnteredFormat.backgroundColor',
+        }})
+
+        # 8. Azul claro nos dados recentes (D-1 ou últimos 7 dias)
         for ln in linhas_destaque:
             requests.append({'repeatCell': {
                 'range': _rng(ln - 1, ln),
@@ -1021,7 +1031,7 @@ def escrever_sheets(registros: list, lookup_cnae: dict = None, lookup_grupo: dic
                 'fields': 'userEnteredFormat.backgroundColor',
             }})
 
-        # 8. Laranja apenas nas células ID (col A) e Origem (última col) das linhas manuais
+        # 9. Laranja apenas nas células ID (col A) e Origem (última col) das linhas manuais
         _ci_id     = 0                                   # coluna A — ID
         _ci_origem = COLUNAS_SHEETS.index('Origem')      # 0-based
         for ln in linhas_manuais:
