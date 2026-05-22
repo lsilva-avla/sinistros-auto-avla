@@ -48,6 +48,10 @@ st.set_page_config(page_title="Sinistros Crédito · AVLA",
                    page_icon=_icon, layout="wide",
                    initial_sidebar_state="collapsed")
 
+# ─── AUTO-REFRESH (5 min) ─────────────────────────────────────────────────────
+from streamlit_autorefresh import st_autorefresh as _autorefresh
+_autorefresh(interval=300_000, limit=None, key="avla_refresh")
+
 # ─── FONTES CUSTOM (base64 em runtime) ────────────────────────────────────────
 import base64 as _b64f
 
