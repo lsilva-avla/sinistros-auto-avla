@@ -37,8 +37,12 @@ PALETTE     = ["#003087","#1565C0","#1976D2","#1E88E5","#42A5F5",
                "#FB8C00","#C0392B","#6A1B9A"]
 
 # ─── PAGE ──────────────────────────────────────────────────────────────────────
-_logo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "avla_logo.png")
-_icon = _logo if os.path.exists(_logo) else "📊"
+from PIL import Image as _PILImage
+_logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "avla_logo.png")
+try:
+    _icon = _PILImage.open(_logo_path)
+except Exception:
+    _icon = "📊"
 
 st.set_page_config(page_title="Sinistros Crédito · AVLA",
                    page_icon=_icon, layout="wide",
