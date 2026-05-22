@@ -1,0 +1,13 @@
+# Credenciais — NUNCA commitar
+*.json
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Sistema
+.DS_Store
+Thumbs.db
