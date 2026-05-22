@@ -1131,8 +1131,32 @@ with tab5:
         "Discricionario": "Discricionário",
         "Origem":         "Origem",
     }
-    cols_t = [c for c in COL_MAP if c in dff.columns]
-    df_tab = dff[cols_t].copy().rename(columns=COL_MAP)
+
+    # ── Controle de ordenação ──────────────────────────────────────────────
+    _sc, _spacer = st.columns([2, 8])
+    with _sc:
+        SORT_OPTS = {
+            "📅 Mais recente primeiro": ("_data",     False),
+            "📅 Mais antiga primeiro":  ("_data",     True),
+            "💰 Maior valor primeiro":  ("Valor_BRL", False),
+            "💰 Menor valor primeiro":  ("Valor_BRL", True),
+        }
+        _sort_label = st.selectbox(
+            "", list(SORT_OPTS.keys()), index=0,
+            label_visibility="collapsed",
+            key="tab5_sort"
+        )
+    _sort_col, _ascending = SORT_OPTS[_sort_label]
+
+    # Ordena no df original (antes da formatação)
+    if _sort_col in dff.columns:
+        dff_sorted = dff.sort_values(_sort_col, ascending=_ascending)
+    else:
+        dff_sorted = dff
+
+    # ── Monta tabela ──────────────────────────────────────────────────────
+    cols_t = [c for c in COL_MAP if c in dff_sorted.columns]
+    df_tab = dff_sorted[cols_t].copy().rename(columns=COL_MAP)
     df_tab.insert(0, "#", range(1, len(df_tab) + 1))
     if "Valor BRL" in df_tab.columns:
         df_tab["Valor BRL"] = df_tab["Valor BRL"].apply(fmt_brl_full)
@@ -1143,6 +1167,6 @@ with tab5:
         unsafe_allow_html=True
     )
     st.markdown(
-        styled_table(df_tab.reset_index(drop=True), max_h="calc(100vh - 230px)"),
+        styled_table(df_tab.reset_index(drop=True), max_h="calc(100vh - 265px)"),
         unsafe_allow_html=True
     )
