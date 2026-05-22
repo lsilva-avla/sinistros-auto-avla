@@ -299,7 +299,7 @@ def styled_table(df, max_h=280):
           "letter-spacing:.06em;font-family:'HALTimezone',Arial,sans-serif;white-space:nowrap;"
           "border-right:1px solid #1976D2;")
     TD = ("padding:5px 10px;color:#212121;background:white;"
-          "border-bottom:1px solid #EEF0F5;font-family:'StyreneALC',Arial,sans-serif;"
+          "border-bottom:1px solid #EEF0F5;font-family:Arial,sans-serif;"
           "font-size:12px;font-weight:400;")
     header = "".join(f'<th style="{TH}">{c}</th>' for c in df.columns)
     rows   = "".join(
