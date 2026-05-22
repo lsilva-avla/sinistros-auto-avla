@@ -26,7 +26,7 @@ EMAIL_CAIXA       = os.environ.get("EMAIL_CAIXA",       "mgignon@avla.com")
 APP_PASSWORD      = os.environ.get("APP_PASSWORD",       "")
 ASSUNTO_FILTRO    = os.environ.get("ASSUNTO_FILTRO",    "SINISTRO")
 REMETENTE_FILTRO  = os.environ.get("REMETENTE_FILTRO",  "notificaciones-01@avla.com")
-DESTINATARIOS     = ["lsilva@avla.com", "mgignon@avla.com"]
+DESTINATARIOS     = ["lsilva@avla.com"]
 
 INICIO = datetime(2026, 1, 1)
 FIM    = datetime.now().replace(hour=23, minute=59, second=59)
@@ -430,8 +430,12 @@ def gerar_html_email(qtd, registros, label_periodo, nome_arquivo, tem_logo=True)
         f'<span style="font-size:13px;color:#444;">Planilha com todos os {qtd} casos · '
         'ID, Nº Sinistro, Data, Segurado, Devedor, CNPJ, Valor</span>'
         '</div>'
-        '<hr style="border:none;border-top:1px solid #eee;margin-bottom:20px;">'
-        '<p style="font-size:13px;color:#666;line-height:1.7;margin:0;">Este é um relatório de validação gerado sob demanda.</p>'
+        '<hr style="border:none;border-top:1px solid #eee;margin:24px 0 16px;">'
+        '<p style="font-size:13px;color:#666;line-height:1.9;margin:0;">'
+        'Este é um relatório de validação gerado sob demanda.<br><br>'
+        '<strong>&#128202; Painel interativo:</strong> '
+        'avla-sinistros-credito.streamlit.app'
+        '</p>'
         '</div>'
         f'<div style="background:#0071CE;padding:20px 40px;text-align:center;">{img_f}'
         '<div style="font-size:11px;color:rgba(255,255,255,.6);margin-top:10px;">Mensagem automática — não é necessário responder</div>'
