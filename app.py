@@ -294,6 +294,7 @@ def to_date(v):
 
 def styled_table(df, max_h=280):
     """Tabela HTML com cabeçalho AVLA #003087 e linhas brancas."""
+    h_css = f"{max_h}px" if isinstance(max_h, int) else max_h
     TH = ("background:#1565C0;color:white;padding:6px 10px;text-align:left;"
           "font-weight:700;font-size:10px;text-transform:uppercase;"
           "letter-spacing:.06em;font-family:'HALTimezone',Arial,sans-serif;white-space:nowrap;"
@@ -309,10 +310,10 @@ def styled_table(df, max_h=280):
         ) + "</tr>"
         for i, row in enumerate(df.values)
     )
-    return (f'<div style="overflow-y:auto;max-height:{max_h}px;'
+    return (f'<div style="overflow-y:auto;max-height:{h_css};'
             f'border:1px solid #DDE3EA;border-radius:8px;">'
             f'<table style="width:100%;border-collapse:collapse;">'
-            f'<thead><tr>{header}</tr></thead>'
+            f'<thead style="position:sticky;top:0;z-index:1;"><tr>{header}</tr></thead>'
             f'<tbody>{rows}</tbody></table></div>')
 
 
@@ -607,11 +608,12 @@ def rank_color(i, n=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊  Visão Geral",
     "🏭  Por Setor",
     "🎯  Concentração",
     "📋  Análise",
+    "📑  Tabela",
 ])
 
 
@@ -1109,3 +1111,38 @@ with tab4:
                     unsafe_allow_html=True)
         st.markdown(f"<div class='fonte-tag'>{len(dff):,} registros · Fonte: Google Sheets · Sinistros Crédito 2026</div>",
                     unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 5 — TABELA COMPLETA
+# ──────────────────────────────────────────────────────────────────────────────
+with tab5:
+    COL_MAP = {
+        "Mes_Ano":        "Mês/Ano",
+        "Setor":          "Setor",
+        "Subsetor":       "Subsetor",
+        "Segurado":       "Segurado",
+        "Devedor":        "Devedor",
+        "CNPJ":           "CNPJ",
+        "Apólice":        "Apólice",
+        "Grupo":          "Grupo Econômico",
+        "Moeda":          "Moeda",
+        "Valor_BRL":      "Valor BRL",
+        "Discricionario": "Discricionário",
+        "Origem":         "Origem",
+    }
+    cols_t = [c for c in COL_MAP if c in dff.columns]
+    df_tab = dff[cols_t].copy().rename(columns=COL_MAP)
+    df_tab.insert(0, "#", range(1, len(df_tab) + 1))
+    if "Valor BRL" in df_tab.columns:
+        df_tab["Valor BRL"] = df_tab["Valor BRL"].apply(fmt_brl_full)
+
+    st.markdown(
+        f"<div class='fonte-tag' style='margin-bottom:.4rem;font-size:.72rem;'>"
+        f"{len(df_tab):,} registros · filtro: <b>{periodo}</b> · Fonte: Google Sheets</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        styled_table(df_tab.reset_index(drop=True), max_h="calc(100vh - 230px)"),
+        unsafe_allow_html=True
+    )
