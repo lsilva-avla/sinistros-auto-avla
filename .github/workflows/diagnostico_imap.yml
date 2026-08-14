@@ -1,0 +1,27 @@
+name: "[DIAG] Diagnóstico IMAP"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install beautifulsoup4
+
+      - name: Executar diagnóstico IMAP
+        env:
+          EMAIL_CAIXA:      ${{ secrets.EMAIL_CAIXA }}
+          APP_PASSWORD:     ${{ secrets.APP_PASSWORD }}
+          REMETENTE_FILTRO: ${{ secrets.REMETENTE_FILTRO }}
+        run: python diagnostico_imap.py
