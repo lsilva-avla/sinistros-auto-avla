@@ -1,0 +1,29 @@
+name: "[BACKFILL] Recuperar sinistros 2026 — ambos senders"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar backfill (jan–hoje, ambos remetentes)
+        env:
+          EMAIL_CAIXA:         ${{ secrets.EMAIL_CAIXA }}
+          APP_PASSWORD:        ${{ secrets.APP_PASSWORD }}
+          EMAIL_DESTINO:       ${{ secrets.EMAIL_DESTINO }}
+          GSHEET_CREDENTIALS:  ${{ secrets.GSHEET_CREDENTIALS }}
+          GSHEET_ID:           ${{ secrets.GSHEET_ID }}
+        run: python backfill.py
