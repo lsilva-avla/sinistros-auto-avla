@@ -77,66 +77,67 @@ def main():
                 pasta_selecionada = nome
                 break
 
-    # Busca 1: SEM filtro de assunto, últimos 90 dias, do remetente esperado
-    since_90 = (date.today() - timedelta(days=90)).strftime("%d-%b-%Y")
+    since_90   = (date.today() - timedelta(days=90)).strftime("%d-%b-%Y")
+    since_ago1 = date(2026, 8, 1).strftime("%d-%b-%Y")   # 1/ago em diante
     before_amanha = (date.today() + timedelta(days=1)).strftime("%d-%b-%Y")
 
-    print(f"\n--- Busca 1: FROM '{REMETENTE_FILTRO}' (90 dias, sem filtro assunto) ---")
-    _, ids = mail.search(None, f'(FROM "{REMETENTE_FILTRO}" SINCE "{since_90}" BEFORE "{before_amanha}")')
-    ids_list = ids[0].split() if ids and ids[0] else []
-    print(f"Emails encontrados: {len(ids_list)}")
+    def listar_emails(ids_list, label, limite=30):
+        print(f"  ({len(ids_list)} encontrados)")
+        for msg_id in ids_list[-limite:]:
+            try:
+                _, dados = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (SUBJECT DATE FROM)])')
+                raw = dados[0][1].decode('utf-8', errors='ignore') if dados and dados[0] else ''
+                assunto = remetente = data_hdr = ''
+                for linha in raw.splitlines():
+                    l = linha.lower()
+                    if l.startswith('subject:'):  assunto   = linha[8:].strip()
+                    elif l.startswith('date:'):   data_hdr  = linha[5:].strip()
+                    elif l.startswith('from:'):   remetente = linha[5:].strip()
+                print(f"    [{data_hdr[:16]}] FROM: {remetente[:55]} | {assunto[:70]}")
+            except Exception as e:
+                print(f"    Erro: {e}")
 
-    for msg_id in ids_list[-20:]:   # últimos 20
-        try:
-            _, dados = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (SUBJECT DATE FROM)])')
-            raw = dados[0][1].decode('utf-8', errors='ignore') if dados and dados[0] else ''
-            assunto = ''
-            data_hdr = ''
-            remetente = ''
-            for linha in raw.splitlines():
-                if linha.lower().startswith('subject:'):
-                    assunto = linha[8:].strip()
-                elif linha.lower().startswith('date:'):
-                    data_hdr = linha[5:].strip()
-                elif linha.lower().startswith('from:'):
-                    remetente = linha[5:].strip()
-            print(f"  [{data_hdr[:16]}] FROM: {remetente[:50]} | ASSUNTO: {assunto[:80]}")
-        except Exception as e:
-            print(f"  Erro ao ler cabeçalho: {e}")
+    # ── BLOCO 1: remetente esperado — 90 dias ───────────────────
+    print(f"\n--- [1] FROM '{REMETENTE_FILTRO}' — últimos 90 dias ---")
+    _, r1 = mail.search(None, f'(FROM "{REMETENTE_FILTRO}" SINCE "{since_90}" BEFORE "{before_amanha}")')
+    l1 = r1[0].split() if r1 and r1[0] else []
+    listar_emails(l1, "remetente 90d")
 
-    # Busca 2: COM filtro de assunto SINISTRO
-    print(f"\n--- Busca 2: SUBJECT 'SINISTRO' (90 dias) ---")
-    _, ids2 = mail.search(None, f'(SUBJECT "SINISTRO" SINCE "{since_90}" BEFORE "{before_amanha}")')
-    ids2_list = ids2[0].split() if ids2 and ids2[0] else []
-    print(f"Com SUBJECT 'SINISTRO': {len(ids2_list)} emails")
+    # ── BLOCO 2: remetente esperado — desde 1/ago ───────────────
+    print(f"\n--- [2] FROM '{REMETENTE_FILTRO}' — desde 01/ago/2026 ---")
+    _, r2 = mail.search(None, f'(FROM "{REMETENTE_FILTRO}" SINCE "{since_ago1}" BEFORE "{before_amanha}")')
+    l2 = r2[0].split() if r2 and r2[0] else []
+    listar_emails(l2, "remetente ago")
 
-    # Busca 3: COM filtro SINIESTRO (espanhol com 'e')
-    print(f"\n--- Busca 3: SUBJECT 'SINIESTRO' (90 dias) ---")
-    _, ids3 = mail.search(None, f'(SUBJECT "SINIESTRO" SINCE "{since_90}" BEFORE "{before_amanha}")')
-    ids3_list = ids3[0].split() if ids3 and ids3[0] else []
-    print(f"Com SUBJECT 'SINIESTRO': {len(ids3_list)} emails")
+    # ── BLOCO 3: SUBJECT SINISTRO — desde 1/ago, qualquer remetente ─
+    print(f"\n--- [3] SUBJECT 'SINISTRO' — desde 01/ago, qualquer remetente ---")
+    _, r3 = mail.search(None, f'(SUBJECT "SINISTRO" SINCE "{since_ago1}" BEFORE "{before_amanha}")')
+    l3 = r3[0].split() if r3 and r3[0] else []
+    listar_emails(l3, "sinistro ago")
 
-    # Busca 4: AVISO (termo genérico)
-    print(f"\n--- Busca 4: SUBJECT 'AVISO' (90 dias, do remetente) ---")
-    _, ids4 = mail.search(None, f'(FROM "{REMETENTE_FILTRO}" SUBJECT "AVISO" SINCE "{since_90}" BEFORE "{before_amanha}")')
-    ids4_list = ids4[0].split() if ids4 and ids4[0] else []
-    print(f"Com SUBJECT 'AVISO': {len(ids4_list)} emails")
+    # ── BLOCO 4: SUBJECT SINISTRO — sem limite de data ──────────
+    print(f"\n--- [4] SUBJECT 'SINISTRO' — sem limite de data (últimos 10) ---")
+    _, r4 = mail.search(None, 'SUBJECT "SINISTRO"')
+    l4 = r4[0].split() if r4 and r4[0] else []
+    listar_emails(l4, "sinistro all", limite=10)
 
-    # Resumo
+    # ── RESUMO ───────────────────────────────────────────────────
     print("\n=== RESUMO ===")
-    print(f"Emails do remetente (90d):    {len(ids_list)}")
-    print(f"Com SINISTRO no assunto:      {len(ids2_list)}")
-    print(f"Com SINIESTRO no assunto:     {len(ids3_list)}")
-    print(f"Com AVISO no assunto:         {len(ids4_list)}")
+    print(f"FROM remetente (90d):         {len(l1)}")
+    print(f"FROM remetente (desde 01/ago):{len(l2)}")
+    print(f"SINISTRO no assunto (01/ago+):{len(l3)}")
+    print(f"SINISTRO no assunto (total):  {len(l4)}")
 
-    if len(ids_list) > 0 and len(ids2_list) == 0 and len(ids3_list) == 0:
-        print("\n⚠️  DIAGNÓSTICO: Emails chegando do remetente, mas assunto mudou!")
-        print("   → Verifique o assunto dos emails acima e ajuste o ASSUNTO_FILTRO no GitHub Secret.")
-    elif len(ids_list) == 0:
-        print("\n⚠️  DIAGNÓSTICO: Nenhum email do remetente nos últimos 90 dias!")
-        print("   → O endereço remetente pode ter mudado, ou emails não estão chegando.")
-    else:
-        print("\n✓  Emails encontrados com filtros atuais — problema pode ser de parse.")
+    if len(l2) == 0 and len(l3) == 0:
+        print("\n⚠️  DIAGNÓSTICO CRÍTICO: nenhum email de sinistro chegou desde 01/ago!")
+        print("   → O sistema parou de enviar notificações para esta caixa.")
+        print("   → Verificar se o endereço receptor mudou no portal de sinistros.")
+    elif len(l2) == 0 and len(l3) > 0:
+        print("\n⚠️  DIAGNÓSTICO: Emails com SINISTRO chegando de OUTRO remetente desde 01/ago!")
+        print("   → O sender mudou. Ajustar REMETENTE_FILTRO no GitHub Secret.")
+    elif len(l2) > 0:
+        print(f"\n✓  Emails do remetente chegando normalmente ({len(l2)} desde 01/ago).")
+        print("   → O problema é de timing (relatório semanal com lag) ou de parse.")
 
     mail.logout()
     print("\nDiagnóstico concluído.")
