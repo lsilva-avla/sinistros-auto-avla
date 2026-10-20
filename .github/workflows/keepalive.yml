@@ -1,0 +1,25 @@
+name: Keepalive (evita desativação dos agendamentos)
+
+# O GitHub desativa workflows agendados após 60 dias sem atividade no repo.
+# Este job faz um commit vazio a cada ~3 semanas para manter o repo "ativo".
+on:
+  schedule:
+    - cron: '0 10 1,21 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Commit vazio de keepalive
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive $(date -u +%F)"
+          git push
