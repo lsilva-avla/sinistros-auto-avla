@@ -36,7 +36,15 @@ ASSUNTO_FILTRO   = os.environ.get("ASSUNTO_FILTRO",   "SINISTRO")
 REMETENTE_FILTRO = os.environ.get("REMETENTE_FILTRO", "notificaciones-01@avla.com")
 _destino_env  = os.environ.get("EMAIL_DESTINO", "")
 DESTINATARIOS = [e.strip() for e in _destino_env.split(',') if e.strip()] \
-                if _destino_env else ["lsilva@avla.com", "mgignon@avla.com"]
+                if _destino_env else [
+                    "lsilva@avla.com",
+                    "mgignon@avla.com",
+                    "ppetit@avla.com",            # Paula Petit-laurent Baldrich
+                    "fyanez@avla.com",            # Francisco Yañez Vasquez
+                    "sub.credito@avla.com",       # Subscrição Crédito
+                    "posvendas@avla.com",         # Pós-Vendas BR
+                    "sinistrobr.credito@avla.com" # Crédito Sinistro
+                ]
 GSHEET_CREDS     = os.environ.get("GSHEET_CREDENTIALS", "")
 GSHEET_ID        = os.environ.get("GSHEET_ID", "")
 
